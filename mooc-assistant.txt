@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC 学习测验助手
 // @namespace    mooc-learning-quiz-merged
-// @version      1.0.0
+// @version      1.0.1
 // @description  自动学习视频与文档，跳过讨论；视频弹题自动处理并继续学习；自选题模式只做选择、判断和填空。
 // @author       based on weiy02/ChinaMOOC-Auto and icourse-auto
 // @license      MIT
@@ -28,7 +28,6 @@
         LEARN_QUIZ_RESUME_WAIT: 8000,   // 提交视频弹题后，等待视频自动恢复播放的最长时间
         LEARN_QUIZ_VISIT_MS: 2500,      // （测验改为直接跳过，不再停留；此值保留作兜底）
         LEARN_OTHER_VISIT_MS: 10000,    // 富文本等其它内容停留 10 秒后自动跳转（用户要求）
-        LEARN_VIDEO_END_MARGIN: 1.5,    // 距视频结尾还剩多少秒视为“已看完”
         LEARN_CONTENT_READY_WAIT: 15000, // 内容加载就绪的最大等待时间（修复“没加载完就跳转”）
         LEARN_IDLE_POLL: 600,           // 视频监控轮询间隔（毫秒）
         LEARN_MAX_PAGE_FLIPS: 600,      // 单个文档最多翻多少页（保险上限）
@@ -991,10 +990,66 @@
         return null;
     }
 
+    function videoUnitContext() {
+        var tab = currentContentTab();
+        return {
+            url: location.href,
+            label: tab ? cleanText(tab.getAttribute('aria-label') || tab.textContent || '').replace(/[（(]已完成[）)]/g, '').trim() : ''
+        };
+    }
+
+    function readVideoUnitCompletion(context) {
+        // 只检查当前视频内容标签，不把课时、章节、导航或别的视频的完成状态算进来。
+        if (location.href !== context.url) return 'changed';
+        var tab = currentContentTab();
+        if (!tab) return 'unknown';
+        var label = cleanText(tab.getAttribute('aria-label') || tab.textContent || '');
+        var identity = label.replace(/[（(]已完成[）)]/g, '').trim();
+        if (context.label && identity !== context.label) return 'changed';
+        if (/未完成|未学完|未学习/.test(label)) return 'pending';
+        if (/[（(]已完成[）)]/.test(label) || tab.querySelector('.lucide-circle-check, [aria-label="已完成"]')) return 'complete';
+        return 'pending';
+    }
+
+    async function waitVideoCompletion(context) {
+        var cfg = getConfig();
+        var timeoutSeconds = Number(cfg.videoCompletionWait);
+        if (!Number.isFinite(timeoutSeconds)) timeoutSeconds = 30;
+        timeoutSeconds = Math.max(5, Math.min(120, timeoutSeconds));
+        var started = Date.now(), grace = 3000, state = 'unknown';
+        updateStatus('⏳ 视频已真正结束，等待单项完成标记更新...');
+        while (Date.now() - started < timeoutSeconds * 1000) {
+            if (taskState.cancelled) throw makeCancelError();
+            if (manualWaitFlag) { logDebug('video', '用户手动跳过完成状态等待'); return true; }
+            state = readVideoUnitCompletion(context);
+            if (state === 'changed') throw makeCancelError();
+            if (state === 'complete' && Date.now() - started >= grace) {
+                logDebug('video', '已确认当前视频单项完成（等待 ' + ((Date.now() - started) / 1000).toFixed(1) + ' 秒）');
+                updateStatus('✅ 当前视频完成状态已确认，准备跳转');
+                return true;
+            }
+            await sleep(500);
+        }
+        if (taskState.cancelled) throw makeCancelError();
+        if (manualWaitFlag) return true;
+        state = readVideoUnitCompletion(context);
+        if (state === 'changed') throw makeCancelError();
+        if (state === 'complete') { logDebug('video', '等待结束时已确认当前视频完成'); return true; }
+        logDebug('video', 'UNCONFIRMED：视频已结束，但 ' + timeoutSeconds + ' 秒内未确认单项完成，状态=' + state);
+        if (cfg.videoCompletionTimeout === 'pause') {
+            updateStatus('⚠️ 视频已结束，但完成状态未确认；已暂停自动学习，请检查后重新开始');
+            return false;
+        }
+        updateStatus('⚠️ 完成状态未确认，已记录日志并继续下一项，请稍后核对');
+        return true;
+    }
+
+
     // 视频内容：从头播放 → 处理弹题 → 看完返回 true
     async function learnVideoItem() {
         var video = await waitForVideo();
         if (!video) { logDebug('video', '⚠️ 未检测到播放器，按其它内容处理'); updateStatus('⚠️ 未检测到播放器，按其它内容处理'); return true; }
+        var completionContext = videoUnitContext();
         video.__marEndedFlag = false; // 连续视频复用播放器时，清除上一视频的结束标记
         // 监听 ended 事件：视频一播完立刻触发跳转（比轮询更快更可靠）
         if (!video.__marEndedHook) {
@@ -1052,11 +1107,10 @@
                 continue;
             }
 
-            // 2) 看完 → 进入下一个内容（ended 事件触发或时长到边）
-            if (video.__marEndedFlag || video.ended || (video.duration > 0 && video.currentTime >= video.duration - CONFIG.LEARN_VIDEO_END_MARGIN)) {
+            // 2) 真正结束后，等待当前视频单项完成标记；不会提前结束播放。
+            if (video.ended || (video.__marEndedFlag && Number.isFinite(video.duration) && video.duration > 0 && video.currentTime >= video.duration - 0.05)) {
                 logDebug('video', '🎬 播放完毕（currentTime=' + (video.currentTime || 0).toFixed(1) + '/duration=' + (video.duration || 0).toFixed(1) + '）');
-                updateStatus('🎬 视频播放完毕');
-                return true;
+                return await waitVideoCompletion(completionContext);
             }
 
             // 3) 意外暂停（非弹题、非手动等待）→ 尝试恢复
@@ -2029,7 +2083,7 @@
   }
 
   function getConfig() {
-    return Object.assign({blankSeparator:"，", autoSubmit:true}, GM_getValue("mooc_merged_quiz_config_v1", {}));
+    return Object.assign({blankSeparator:"，", autoSubmit:true, videoCompletionWait:30, videoCompletionTimeout:"continue"}, GM_getValue("mooc_merged_quiz_config_v1", {}));
   }
   function saveConfig(cfg) { GM_setValue("mooc_merged_quiz_config_v1", cfg); }
   function yield$() { return new Promise(resolve => setTimeout(resolve, 0)); }
@@ -2785,7 +2839,7 @@
               <div class="mar-pane" data-pane="auto">
                 <button id="mar-learn-start" class="mar-btn">开始自动学习（视频＋文档）</button>
                 <button id="mar-learn-probe" class="mar-btn">页面 DOM 诊断</button>
-                <div class="mar-field"><span class="mar-label">自动学习说明</span><span class="mar-hint">从当前内容开始，视频逐个播放；文档、PDF、PPT 自动翻页，每页约 1 秒。讨论、独立测验和其他内容跳过。视频内弹题自动处理，答题后自动点击“继续学习”（含答错情况）。</span></div>
+                <div class="mar-field"><span class="mar-label">自动学习说明</span><span class="mar-hint">从当前内容开始，视频真正结束并确认完成标记后跳转（超时按设置处理）；文档、PDF、PPT 自动翻页，每页约 1 秒。讨论、独立测验和其他内容跳过。视频内弹题自动处理，答题后自动点击“继续学习”（含答错情况）。</span></div>
               </div>
               <div class="mar-pane" data-pane="quiz">
                 <button id="mar-quiz-start" class="mar-btn">开始测验（只做选择、填空）</button>
@@ -2798,6 +2852,8 @@
               <div class="mar-pane" data-pane="log"><button id="mar-log-copy" class="mar-btn">复制日志</button><button id="mar-log-clear" class="mar-btn">清空日志</button><div id="mar-log-box" class="mar-log-box">（暂无日志）</div></div>
               <div class="mar-pane" data-pane="settings">
                 <div class="mar-field"><span class="mar-label">视频倍速：<span id="mar-rate-now"></span></span><input id="mar-rate" type="range" min="0.5" max="3" step="0.25"><span class="mar-hint">用于自动学习的视频播放。</span></div>
+                <div class="mar-field"><label class="mar-label" for="mar-completion-wait">视频结束后等待完成状态（秒）</label><input id="mar-completion-wait" type="number" min="5" max="120" step="1" style="width:100%;padding:7px;box-sizing:border-box"><span class="mar-hint">默认 30 秒，确认当前视频已完成后再跳转；至少停留 3 秒。</span></div>
+                <div class="mar-field"><label class="mar-label" for="mar-completion-timeout">完成状态等待超时</label><select id="mar-completion-timeout" style="width:100%;padding:7px"><option value="continue">记录未确认并继续下一项</option><option value="pause">暂停，留在当前视频检查</option></select></div>
                 <button id="mar-llm-config" class="mar-btn">LLM 配置</button>
                 <button id="mar-copy-unlock" class="mar-btn mar-toggle">解除复制限制：关</button>
               </div>
@@ -2852,6 +2908,17 @@
         var submit = document.getElementById('mar-quiz-submit');
         submit.checked = getConfig().autoSubmit;
         submit.onchange = function () { var c = getConfig(); c.autoSubmit = submit.checked; saveConfig(c); };
+        var completionWait = document.getElementById('mar-completion-wait');
+        completionWait.value = getConfig().videoCompletionWait;
+        completionWait.onchange = function () {
+            var value = Number(completionWait.value);
+            if (!Number.isFinite(value)) value = 30;
+            var c = getConfig(); c.videoCompletionWait = Math.max(5, Math.min(120, value));
+            completionWait.value = c.videoCompletionWait; saveConfig(c);
+        };
+        var completionTimeout = document.getElementById('mar-completion-timeout');
+        completionTimeout.value = getConfig().videoCompletionTimeout;
+        completionTimeout.onchange = function () { var c = getConfig(); c.videoCompletionTimeout = completionTimeout.value; saveConfig(c); };
         document.getElementById('mar-stop').onclick = function () {
             if (!taskState.running) return;
             taskState.cancelled = true; learnClearState(); setFloatVisible(false);
