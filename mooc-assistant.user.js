@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC 学习测验助手
 // @namespace    mooc-learning-quiz-merged
-// @version      1.0.3
+// @version      1.0.4
 // @description  自动学习视频与文档，跳过讨论；视频弹题自动处理并继续学习；自选题模式只做选择、判断和填空。
 // @author       based on weiy02/ChinaMOOC-Auto and icourse-auto
 // @license      MIT
@@ -34,11 +34,12 @@
         quizUrl: /quizObject|quizIndex|testObject|\/learn\/quiz|\/learn\/test|homeworkObject|\/learn\/homework/i,
     };
 
-    var taskState = { running: false, cancelled: false };
+    var taskState = { running: false, cancelled: false, stopReason: "", outcomeRecorded: false, lastStatus: "" };
 
-    function makeCancelError() {
-        var e = new Error('已停止');
+    function makeCancelError(reason) {
+        var e = new Error(reason || taskState.stopReason || '任务取消：未记录停止按钮点击，可能是页面状态改变');
         e.__cancelled = true;
+        e.stopReason = e.message;
         return e;
     }
 
@@ -90,6 +91,60 @@
             el.dispatchEvent(new MouseEvent(types[i], { bubbles: true, cancelable: true }));
         }
     }
+    var RUN_EVENTS_KEY = 'mooc.merged.run.events.v1';
+
+    function recordRunEvent(type, message) {
+        var events = readStore(RUN_EVENTS_KEY, []);
+        if (!Array.isArray(events)) events = [];
+        events.push({ time: new Date().toISOString(), type: type, message: String(message) });
+        writeStore(RUN_EVENTS_KEY, events.slice(-40));
+        logDebug('运行记录/' + type, message);
+    }
+
+    function finishRun(type, reason) {
+        if (taskState.outcomeRecorded) return;
+        taskState.outcomeRecorded = true;
+        taskState.stopReason = reason;
+        recordRunEvent(type, reason);
+        learnClearState(); setFloatVisible(false);
+        updateStatus((type === 'complete' ? '✅ ' : '⏹ ') + reason);
+    }
+
+    function requestStop(event) {
+        if (!taskState.running || taskState.cancelled) return;
+        var reason = event && event.isTrusted
+            ? '手动停止：点击了停止按钮'
+            : '停止按钮被程序触发（非真实点击）';
+        taskState.cancelled = true;
+        finishRun('stop', reason);
+    }
+
+    function showRunHistory() {
+        var events = readStore(RUN_EVENTS_KEY, []);
+        if (!Array.isArray(events)) events = [];
+        showTextOverlay('运行记录（保留最近 40 条）', events.map(function (e) {
+            return e.time + ' [' + e.type + '] ' + e.message;
+        }).join('\n') || '暂无运行记录');
+    }
+
+    function initRunDiagnostics() {
+        var events = readStore(RUN_EVENTS_KEY, []);
+        if (Array.isArray(events) && events.length) {
+            events.slice(-5).forEach(function (e) { logDebug('历史运行/' + e.type, e.time + ' ' + e.message); });
+            if (!learnLoadState()) updateStatus('上次记录：' + events[events.length - 1].message);
+        }
+        window.addEventListener('pagehide', function () {
+            if (!taskState.running || taskState.cancelled) return;
+            var video = findVideo();
+            var position = video && Number.isFinite(video.currentTime) ? '，视频位置 ' + Math.floor(video.currentTime) + ' 秒' : '';
+            recordRunEvent('pagehide', '页面离开或刷新' + position + '；如仍有学习计划，将在同课程内容页尝试续跑');
+        });
+        document.addEventListener('visibilitychange', function () {
+            if (!taskState.running || taskState.cancelled) return;
+            recordRunEvent('visibility', document.hidden ? '页面切到后台（未请求停止）' : '页面回到前台（未请求停止）');
+        });
+    }
+
     function readStore(key, fallback) {
         try {
             var raw = localStorage.getItem(key);
@@ -324,6 +379,7 @@
     }
 
     function updateStatus(msg) {
+        taskState.lastStatus = String(msg || "");
         if (statusEl) statusEl.textContent = msg;
         logDebug('status', msg);
     }
@@ -333,7 +389,7 @@
             var el = btns[i];
             if (el.id === 'mar-stop') continue;
             if (el.classList.contains('mar-toggle')) continue;
-            if (el.id === 'mar-log-copy' || el.id === 'mar-log-clear') continue;
+            if (el.id === 'mar-log-copy' || el.id === 'mar-log-clear' || el.id === 'mar-run-history') continue;
             el.disabled = isRunning;
         }
         var stop = document.getElementById('mar-stop');
@@ -641,7 +697,7 @@
             if (taskState.cancelled) throw makeCancelError();
             if (manualWaitFlag) { logDebug('video', '用户手动跳过完成状态等待'); return true; }
             state = readVideoUnitCompletion(context);
-            if (state === 'changed') throw makeCancelError();
+            if (state === 'changed') throw makeCancelError('页面或视频单元已切换，停止等待原视频完成状态（非停止按钮）');
             if (state === 'complete' && Date.now() - started >= grace) {
                 logDebug('video', '已确认当前视频单项完成（等待 ' + ((Date.now() - started) / 1000).toFixed(1) + ' 秒）');
                 updateStatus('✅ 当前视频完成状态已确认，准备跳转');
@@ -652,7 +708,7 @@
         if (taskState.cancelled) throw makeCancelError();
         if (manualWaitFlag) return true;
         state = readVideoUnitCompletion(context);
-        if (state === 'changed') throw makeCancelError();
+        if (state === 'changed') throw makeCancelError('页面或视频单元已切换，停止等待原视频完成状态（非停止按钮）');
         if (state === 'complete') { logDebug('video', '等待结束时已确认当前视频完成'); return true; }
         logDebug('video', 'UNCONFIRMED：视频已结束，但 ' + timeoutSeconds + ' 秒内未确认单项完成，状态=' + state);
         if (cfg.videoCompletionTimeout === 'pause') {
@@ -666,6 +722,10 @@
         var video = await waitForVideo();
         if (!video) { logDebug('video', '⚠️ 未检测到播放器，按其它内容处理'); updateStatus('⚠️ 未检测到播放器，按其它内容处理'); return true; }
         var completionContext = videoUnitContext();
+        if (video.ended) {
+            logDebug('video', '视频已经结束，直接检查完成标记，不重新播放');
+            return await waitVideoCompletion(completionContext);
+        }
         video.__marEndedFlag = false; // 连续视频复用播放器时，清除上一视频的结束标记
         if (!video.__marEndedHook) {
             video.__marEndedHook = true;
@@ -673,9 +733,8 @@
                 try { video.__marEndedFlag = true; } catch (e) {}
             });
         }
-        try { if (video.currentTime > 0) video.currentTime = 0; } catch (e) {}
-        logDebug('video', '从头播放：时长=' + (video.duration ? video.duration.toFixed(1) : '?') + 's，倍速=' + loadVideoRate() + 'x');
-        updateStatus('▶ 从头播放视频，看完自动进入下一个内容...');
+        logDebug('video', '从当前位置 ' + Math.floor(video.currentTime || 0) + ' 秒继续播放：时长=' + (video.duration ? video.duration.toFixed(1) : '?') + 's，倍速=' + loadVideoRate() + 'x');
+        updateStatus('▶ 从当前位置 ' + Math.floor(video.currentTime || 0) + ' 秒继续播放...');
         await playVideo(video);
 
         var manualResume = false;
@@ -882,7 +941,7 @@
     var LEARN_STATE_KEY = 'mooc.merged.learn.state.v1'; // v2：清掉旧版残留的脏计划
 
     function learnSaveState(st) {
-        try { localStorage.setItem(LEARN_STATE_KEY, JSON.stringify(st)); } catch (e) {}
+        try { localStorage.setItem(LEARN_STATE_KEY, JSON.stringify(st)); } catch (e) { logDebug('state', '无法保存学习计划，刷新后可能中断：' + e.message); }
     }
     function learnLoadState() {
         try {
@@ -1213,7 +1272,10 @@
             realClick(target);
             updateStatus('➡️ 同小节：进入下一个内容');
             logDebug('nav', '优先级1 同小节：点击「' + (target.getAttribute('aria-label') || cleanText(target.textContent).slice(0, 20)) + '」');
-            await waitForTabActive(target);
+            if (!await waitForTabActive(target)) {
+                updateStatus('同小节标签切换超时，自动学习暂停，请检查页面');
+                return false;
+            }
             return true;
         }
         logDebug('nav', '优先级1 无下一个同小节 tab（已到本节末尾）');
@@ -1237,7 +1299,8 @@
             return false;
         }
         logDebug('nav', '🏁 三级跳转全部无目标 → 课程学习完成');
-        alert('课程学习完成！');
+        updateStatus('未找到后续内容；可能已到课程末尾，如未学完请检查章节目录');
+        recordRunEvent('navigation', '目录检查未找到后续内容，结束本轮自动学习');
         return false;
     }
     function hasVisibleContentBody() {
@@ -1276,13 +1339,13 @@
     }
     async function learnOne() {
         var st = learnLoadState();
-        if (!st) { setFloatVisible(false); return; }
+        if (!st) { finishRun('state', '学习计划不可用或已被清除，自动学习结束（未确认点击停止按钮）'); return; }
         manualWaitFlag = false;
         await sleep(500);
         await dismissModal();
         updateStatus('⏳ 等待内容加载...');
         var ready = await waitContentReady(CONFIG.LEARN_CONTENT_READY_WAIT);
-        if (taskState.cancelled) { learnClearState(); setFloatVisible(false); return; }
+        if (taskState.cancelled) { finishRun('stop', taskState.stopReason || '任务已取消（来源未知）'); return; }
         var type;
         if (!ready) {
             updateStatus('⚠️ 内容加载超时（15 秒未渲染出来），按加载失败跳过...');
@@ -1302,15 +1365,15 @@
             done = true;
         }
         if (taskState.cancelled || !done) {
-            if (taskState.cancelled) updateStatus('⏹ 已停止当前操作');
-            learnClearState();
-            setFloatVisible(false);
+            finishRun(taskState.cancelled ? 'stop' : 'pause', taskState.cancelled
+                ? (taskState.stopReason || '任务取消：来源未知')
+                : ('自动暂停：' + (taskState.lastStatus || '当前内容处理未完成')));
             return;
         }
         st.lastType = type;
         learnSaveState(st);
         var ok = await goNext();
-        if (!ok) { learnClearState(); setFloatVisible(false); return; }
+        if (!ok) { finishRun('navigation', '导航结束：' + (taskState.lastStatus || '未能确认下一项')); return; }
         await learnOne();
     }
     async function learnChapter() {
@@ -1330,25 +1393,15 @@
     function resumeLearn() {
         var st = learnLoadState();
         if (!st) return;
-        if (st.course && location.pathname.indexOf(st.course) !== 0) { learnClearState(); return; }
-        taskState.running = true;
-        taskState.cancelled = false;
-        setButtonsRunning(true);
+        if (st.course && location.pathname.indexOf(st.course) !== 0) {
+            recordRunEvent('course', '课程路径改变，取消旧课程的自动续跑');
+            learnClearState(); return;
+        }
         setFloatVisible(true);
-        logDebug('learn', '▶ 页面刷新，自动学习已恢复（lastType=' + (st.lastType || 'null') + '）');
-        updateStatus('▶ 自动学习已恢复...');
-        Promise.resolve().then(learnOne).catch(function (err) {
-            if (err && err.__cancelled) updateStatus('⏹ 已停止当前操作');
-            else { logDebug('err', '自动学习异常：' + (err && err.message)); console.error('[auto-learn]', err); updateStatus('❌ 自动学习异常：' + (err && err.message)); }
-        }).then(function () {
-            if (!learnLoadState()) {
-                taskState.running = false;
-                taskState.cancelled = false;
-                setButtonsRunning(false);
-                setFloatVisible(false);
-            }
-        });
+        runGuarded(learnOne, true);
     }
+
+
     var manualWaitFlag = false;
 
     function createFloatNextBtn() {
@@ -2079,7 +2132,7 @@
               <div class="mar-pane" data-pane="auto">
                 <button id="mar-learn-start" class="mar-btn">开始自动学习（视频＋文档）</button>
                 <button id="mar-learn-probe" class="mar-btn">页面 DOM 诊断</button>
-                <div class="mar-field"><span class="mar-label">自动学习说明</span><span class="mar-hint">从当前内容开始，视频真正结束并确认完成标记后跳转（超时按设置处理）；文档、PDF、PPT 自动翻页，每页约 1 秒。讨论、独立测验和其他内容跳过。视频内弹题自动处理，答题后自动点击“继续学习”（含答错情况）。</span></div>
+                <div class="mar-field"><span class="mar-label">自动学习说明</span><span class="mar-hint">从视频当前位置继续播放，真正结束并确认完成标记后跳转（超时按设置处理）；文档、PDF、PPT 自动翻页，每页约 1 秒。讨论、独立测验和其他内容跳过。视频内弹题自动处理，答题后自动点击“继续学习”（含答错情况）。</span></div>
               </div>
               <div class="mar-pane" data-pane="quiz">
                 <button id="mar-quiz-start" class="mar-btn">开始测验（只做选择、填空）</button>
@@ -2089,7 +2142,7 @@
                 <div class="mar-field"><label class="mar-label" for="mar-blank-separator">多空分隔符</label><input id="mar-blank-separator" type="text" style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #ddd;border-radius:8px"><span class="mar-hint">默认中文逗号“，”，修改后自动保存。可输入空格、顿号等；输入 \\n 表示换行；留空直接拼接。仅用于多个答案共用一个输入框。</span></div>
                 <div class="mar-field"><label><input id="mar-quiz-submit" type="checkbox"> 答完后自动提交</label><span class="mar-hint">沿用原自选题模式，默认开启。若存在跳过题、失败题或未确认填写成功，只填不交，留你检查。</span></div>
               </div>
-              <div class="mar-pane" data-pane="log"><button id="mar-log-copy" class="mar-btn">复制日志</button><button id="mar-log-clear" class="mar-btn">清空日志</button><div id="mar-log-box" class="mar-log-box">（暂无日志）</div></div>
+              <div class="mar-pane" data-pane="log"><button id="mar-run-history" class="mar-btn">查看运行记录（刷新后保留）</button><button id="mar-log-copy" class="mar-btn">复制日志</button><button id="mar-log-clear" class="mar-btn">清空日志</button><div id="mar-log-box" class="mar-log-box">（暂无日志）</div></div>
               <div class="mar-pane" data-pane="settings">
                 <div class="mar-field"><span class="mar-label">视频倍速：<span id="mar-rate-now"></span></span><input id="mar-rate" type="range" min="0.5" max="3" step="0.25"><span class="mar-hint">用于自动学习的视频播放。</span></div>
                 <div class="mar-field"><label class="mar-label" for="mar-completion-wait">视频结束后等待完成状态（秒）</label><input id="mar-completion-wait" type="number" min="5" max="120" step="1" style="width:100%;padding:7px;box-sizing:border-box"><span class="mar-hint">默认 30 秒，确认当前视频已完成后再跳转；至少停留 3 秒。</span></div>
@@ -2132,6 +2185,7 @@
         document.getElementById('mar-quiz-llm').onclick = showLlmConfigPanel;
         document.getElementById('mar-llm-config').onclick = showLlmConfigPanel;
         document.getElementById('mar-log-copy').onclick = copyDebugLogs;
+        document.getElementById('mar-run-history').onclick = showRunHistory;
         document.getElementById('mar-log-clear').onclick = clearDebugLogs;
         document.getElementById('mar-copy-unlock').onclick = toggleCopyUnlock;
         updateCopyUnlockButton();
@@ -2159,26 +2213,35 @@
         var completionTimeout = document.getElementById('mar-completion-timeout');
         completionTimeout.value = getConfig().videoCompletionTimeout;
         completionTimeout.onchange = function () { var c = getConfig(); c.videoCompletionTimeout = completionTimeout.value; saveConfig(c); };
-        document.getElementById('mar-stop').onclick = function () {
-            if (!taskState.running) return;
-            taskState.cancelled = true; learnClearState(); setFloatVisible(false);
-            updateStatus('⏹ 正在停止当前操作...');
-        };
+        document.getElementById('mar-stop').onclick = requestStop;
         setButtonsRunning(false);
     }
 
-    async function runGuarded(fn) {
+    async function runGuarded(fn, resumed) {
         if (taskState.running) { updateStatus('请先停止当前操作或等待完成'); return; }
-        taskState.running = true; taskState.cancelled = false; setButtonsRunning(true);
-        try { await fn(); }
-        catch (e) {
-            if (e && e.__cancelled) updateStatus('⏹ 已停止当前操作');
-            else { logDebug('err', e && e.message || String(e)); updateStatus('❌ ' + (e && e.message || e)); }
-            learnClearState(); setFloatVisible(false);
+        taskState.running = true; taskState.cancelled = false;
+        taskState.stopReason = ''; taskState.outcomeRecorded = false;
+        setButtonsRunning(true);
+        var name = fn === learnChapter || fn === learnOne ? '自动学习' : '测验';
+        recordRunEvent(resumed ? 'resume' : 'start', (resumed ? '页面刷新后恢复' : '开始') + name);
+        if (resumed) updateStatus('▶ 正在恢复自动学习，从播放器当前进度继续...');
+        try {
+            await fn();
+            if (!taskState.outcomeRecorded) {
+                if (taskState.cancelled) finishRun('stop', taskState.stopReason || '任务取消：来源未知');
+                else if (name === '自动学习') finishRun('end', '自动学习流程已返回，' + (taskState.lastStatus || '请检查运行记录'));
+                else recordRunEvent('quiz-end', '测验处理结束：' + (taskState.lastStatus || '已返回'));
+            }
+        } catch (e) {
+            finishRun(e && e.__cancelled ? 'cancel' : 'error', e && e.__cancelled
+                ? (e.stopReason || e.message)
+                : '运行异常：' + (e && e.message || String(e)));
         } finally {
-            taskState.running = false; taskState.cancelled = false; setButtonsRunning(false);
+            taskState.running = false; taskState.cancelled = false;
+            setButtonsRunning(false); setFloatVisible(false);
         }
     }
+
 
     function previewQuiz() {
         var names = {'0':'单选','1':'多选','2':'填空','3':'判断','4':'简答（跳过）'};
@@ -2286,7 +2349,7 @@
     }
     function init() {
         applyCopyUnlock(isCopyUnlockOn());
-        createFloatingPanel(); createFloatNextBtn(); resumeLearn();
+        createFloatingPanel(); createFloatNextBtn(); initRunDiagnostics(); resumeLearn();
     }
     if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(init, 1000);
     else window.addEventListener('load', function () { setTimeout(init, 1000); });
