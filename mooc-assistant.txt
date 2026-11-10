@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC 学习测验助手
 // @namespace    mooc-learning-quiz-merged
-// @version      1.0.6
+// @version      1.0.7
 // @description  自动学习视频与文档，跳过讨论；视频弹题自动处理并继续学习；自选题模式只做选择、判断和填空。
 // @author       based on weiy02/ChinaMOOC-Auto and icourse-auto
 // @license      MIT
@@ -521,9 +521,21 @@
         }
         return null;
     }
+    function activeTabIsVideo() {
+        var tab = currentContentTab();
+        return !!(tab && tab.querySelector('[data-lesson-type-icon="video"]'));
+    }
     function findVideo() {
-        var v = document.querySelector('video');
-        return v && isVisible(v) ? v : null;
+        var videos = document.querySelectorAll('video');
+        for (var i = 0; i < videos.length; i++) if (isVisible(videos[i])) return videos[i];
+        // 弹题/自定义播放器可能隐藏 video 画面，但媒体元素仍是当前视频。
+        if (activeTabIsVideo()) {
+            for (var j = 0; j < videos.length; j++) {
+                var rect = videos[j].getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) return videos[j];
+            }
+        }
+        return null;
     }
     function findPlayButtons() {
         var out = [], els = document.querySelectorAll('button, a, [role="button"], span, div');
@@ -767,7 +779,7 @@
     }
     async function learnVideoItem() {
         var video = await waitForVideo();
-        if (!video) { logDebug('video', '⚠️ 未检测到播放器，按其它内容处理'); updateStatus('⚠️ 未检测到播放器，按其它内容处理'); return true; }
+        if (!video) { logDebug('video', '⚠️ 未检测到播放器，保留当前项'); updateStatus('⚠️ 未检测到播放器，自动学习暂停，保留当前项'); return false; }
         var completionContext = videoUnitContext();
         if (video.ended) {
             logDebug('video', '视频已经结束，直接检查完成标记，不重新播放');
@@ -1015,14 +1027,48 @@
             })();
         });
     }
+    function contentTabKey(tab) {
+        return tab ? cleanText(tab.getAttribute('aria-label') || tab.textContent || '')
+            .replace(/[（(](?:已完成|未完成|未学习|未学完)[）)]/g, '').trim() : '';
+    }
+    function freshContentTab(key) {
+        var tabs = contentTabs();
+        for (var i = 0; i < tabs.length; i++) if (contentTabKey(tabs[i]) === key) return tabs[i];
+        return null;
+    }
     async function waitForTabActive(tab) {
-        var t0 = Date.now();
+        var key = contentTabKey(tab), t0 = Date.now();
+        if (!key) return false;
         while (Date.now() - t0 < CONFIG.LEARN_NAV_WAIT) {
             if (taskState.cancelled) return false;
-            if (tab && tab.getAttribute('aria-selected') === 'true') return true;
+            // React 重绘后原节点可能已被移除，必须从当前目录重新定位。
+            var current = freshContentTab(key);
+            if (current && current.getAttribute('aria-selected') === 'true') return true;
             await sleep(200);
         }
-        return !!(tab && tab.getAttribute('aria-selected') === 'true');
+        var latest = freshContentTab(key);
+        return !!(!taskState.cancelled && latest && latest.getAttribute('aria-selected') === 'true');
+    }
+    async function activateContentTab(tab) {
+        var key = contentTabKey(tab), before = videoUnitContext();
+        for (var attempt = 0; attempt < 2; attempt++) {
+            if (taskState.cancelled) throw makeCancelError();
+            if (contentUnitChanged(before, videoUnitContext())) {
+                followCurrentContent(before);
+                return true; // 平台已经切换，不再点击旧目标。
+            }
+            var target = freshContentTab(key);
+            if (!target) { await sleep(300); continue; }
+            if (target.getAttribute('aria-selected') === 'true') return true;
+            recordRunEvent('tab-click', '进入标签「' + key + '」，第 ' + (attempt + 1) + ' 次');
+            // 使用浏览器原生 click，避免手工 mousedown 导致重绘后向旧节点派发 click。
+            if (typeof target.click === 'function') target.click();
+            else realClick(target);
+            if (await waitForTabActive(target)) return true;
+        }
+        if (contentUnitChanged(before, videoUnitContext())) { followCurrentContent(before); return true; }
+        recordRunEvent('tab-timeout', '目标「' + key + '」，当前「' + contentTabKey(currentContentTab()) + '」；重试后仍未确认切换');
+        return false;
     }
     function currentContentTab() {
         var tabs = document.querySelectorAll('[role="tab"][aria-selected="true"]');
@@ -1317,10 +1363,9 @@
         logDebug('nav', 'goNext 入口：当前激活 tab=「' + (curTab.getAttribute('aria-label') || cleanText(curTab.textContent).slice(0, 20)) + '」');
         var target = nextTabSkipQuiz(curTab);
         if (target) {
-            realClick(target);
             updateStatus('➡️ 同小节：进入下一个内容');
             logDebug('nav', '优先级1 同小节：点击「' + (target.getAttribute('aria-label') || cleanText(target.textContent).slice(0, 20)) + '」');
-            if (!await waitForTabActive(target)) {
+            if (!await activateContentTab(target)) {
                 updateStatus('同小节标签切换超时，自动学习暂停，请检查页面');
                 return false;
             }
@@ -1377,6 +1422,7 @@
         while (Date.now() - t0 < timeout) {
             if (taskState.cancelled) return false;
             if (findVideo()) { logDebug('load', '内容就绪：video（' + (Date.now() - t0) + 'ms）'); return true; }
+            if (activeTabIsVideo()) { await sleep(500); continue; }
             if (findDocViewer()) { logDebug('load', '内容就绪：文档查看器（' + (Date.now() - t0) + 'ms）'); return true; }
             if (looksLikeDiscussionPage()) { logDebug('load', '内容就绪：讨论页（' + (Date.now() - t0) + 'ms）'); return true; }
             if (hasVisibleContentBody()) { logDebug('load', '内容就绪：富文本/标题页正文（' + (Date.now() - t0) + 'ms）'); return true; }
@@ -1395,6 +1441,10 @@
         var ready = await waitContentReady(CONFIG.LEARN_CONTENT_READY_WAIT);
         if (taskState.cancelled) { finishRun('stop', taskState.stopReason || '任务已取消（来源未知）'); return; }
         var type;
+        if (!ready && activeTabIsVideo()) {
+            finishRun('pause', '当前是视频标签，但播放器尚未就绪；保留当前项，不自动跳过');
+            return;
+        }
         if (!ready) {
             updateStatus('⚠️ 内容加载超时（15 秒未渲染出来），按加载失败跳过...');
             type = 'missing';
@@ -1404,6 +1454,7 @@
         var itemContext = videoUnitContext();
         var itemVideo = findVideo();
         var previousPlayer = { video: itemVideo, source: itemVideo ? (itemVideo.currentSrc || itemVideo.src || '') : '' };
+        recordRunEvent('item', 'v1.0.7 处理内容：类型=' + type + '，标签「' + contentTabKey(currentContentTab()) + '」');
         var done = true;
 
         if (type === 'video') {
@@ -1431,6 +1482,13 @@
                 finishRun('pause', taskState.lastStatus || '切换后播放器未就绪');
                 return;
             }
+            await learnOne();
+            return;
+        }
+        // 即便类型识别/页面渲染异常，也不能跳过仍在播放或等待弹题的视频。
+        var remainingVideo = findVideo();
+        if (!manualWaitFlag && activeTabIsVideo() && (!remainingVideo || !remainingVideo.ended)) {
+            recordRunEvent('video-guard', '视频尚未真正结束，继续处理当前项，不进入下一标签');
             await learnOne();
             return;
         }
@@ -2286,7 +2344,7 @@
         taskState.stopReason = ''; taskState.outcomeRecorded = false;
         setButtonsRunning(true);
         var name = fn === learnChapter || fn === learnOne ? '自动学习' : '测验';
-        recordRunEvent(resumed ? 'resume' : 'start', (resumed ? '页面刷新后恢复' : '开始') + name);
+        recordRunEvent(resumed ? 'resume' : 'start', (resumed ? '页面刷新后恢复' : '开始') + name + '（v1.0.7）');
         if (resumed) updateStatus('▶ 正在恢复自动学习，从播放器当前进度继续...');
         try {
             await fn();
