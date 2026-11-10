@@ -1,17 +1,17 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const source=fs.readFileSync('mooc-assistant.user.js','utf8');
 const storage=new Map(),handlers={},logs=[];
-const context={console:{log(){},warn(){},error(){}},GM_getValue:(k,f)=>f,GM_setValue(){},GM_addStyle(){},
+const context={URL,console:{log(){},warn(){},error(){}},GM_getValue:(k,f)=>f,GM_setValue(){},GM_addStyle(){},
  setTimeout(){},clearTimeout(){},
  document:{readyState:'complete',querySelectorAll(){return [];},querySelector(){return null;},getElementById(){return null;},addEventListener(type,fn){handlers[type]=fn;},hidden:false},
  window:{addEventListener(type,fn){handlers[type]=fn;}},location:{href:'https://www.icourse163.org/mooc/learn/X/content/1',pathname:'/mooc/learn/X/content/1',hash:''},
- localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)}};
+ sessionStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)}};
 const exported=source.replace('    function init() {',`globalThis.t={learnVideoItem,runGuarded,requestStop,makeCancelError,taskState,resumeLearn,learnSaveState,learnLoadState,learnOne,initRunDiagnostics,set:function(name,value){eval(name+' = value');}};\n    function init() {`);
 vm.createContext(context);vm.runInContext(exported,context);
 const t=context.t;
 t.set('logDebug',(category,message)=>logs.push({category,message}));
 t.set('setButtonsRunning',()=>{});t.set('setFloatVisible',()=>{});
-const events=()=>JSON.parse(storage.get('mooc.merged.run.events.v1')||'[]');
+const events=()=>JSON.parse(storage.get('mooc.merged.run.events.v2')||'[]');
 function reset(){storage.clear();logs.length=0;Object.assign(t.taskState,{running:false,cancelled:false,stopReason:'',outcomeRecorded:false,lastStatus:''});t.set('manualWaitFlag',false);}
 (async()=>{
  // 视频停在123秒：启动不能改写currentTime，已经结束也不能调用play重播。

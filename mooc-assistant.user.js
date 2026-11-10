@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC 学习测验助手
 // @namespace    mooc-learning-quiz-merged
-// @version      1.0.4
+// @version      1.0.5
 // @description  自动学习视频与文档，跳过讨论；视频弹题自动处理并继续学习；自选题模式只做选择、判断和填空。
 // @author       based on weiy02/ChinaMOOC-Auto and icourse-auto
 // @license      MIT
@@ -91,13 +91,18 @@
             el.dispatchEvent(new MouseEvent(types[i], { bubbles: true, cancelable: true }));
         }
     }
-    var RUN_EVENTS_KEY = 'mooc.merged.run.events.v1';
+    var RUN_EVENTS_KEY = 'mooc.merged.run.events.v2';
+
+    function readRunEvents() {
+        try { return JSON.parse(sessionStorage.getItem(RUN_EVENTS_KEY) || '[]'); }
+        catch (e) { return []; }
+    }
 
     function recordRunEvent(type, message) {
-        var events = readStore(RUN_EVENTS_KEY, []);
+        var events = readRunEvents();
         if (!Array.isArray(events)) events = [];
         events.push({ time: new Date().toISOString(), type: type, message: String(message) });
-        writeStore(RUN_EVENTS_KEY, events.slice(-40));
+        try { sessionStorage.setItem(RUN_EVENTS_KEY, JSON.stringify(events.slice(-40))); } catch (e) {}
         logDebug('运行记录/' + type, message);
     }
 
@@ -120,7 +125,7 @@
     }
 
     function showRunHistory() {
-        var events = readStore(RUN_EVENTS_KEY, []);
+        var events = readRunEvents();
         if (!Array.isArray(events)) events = [];
         showTextOverlay('运行记录（保留最近 40 条）', events.map(function (e) {
             return e.time + ' [' + e.type + '] ' + e.message;
@@ -128,7 +133,7 @@
     }
 
     function initRunDiagnostics() {
-        var events = readStore(RUN_EVENTS_KEY, []);
+        var events = readRunEvents();
         if (Array.isArray(events) && events.length) {
             events.slice(-5).forEach(function (e) { logDebug('历史运行/' + e.type, e.time + ' ' + e.message); });
             if (!learnLoadState()) updateStatus('上次记录：' + events[events.length - 1].message);
@@ -666,21 +671,30 @@
         return null;
     }
 
+    // 只比较课程、课件和视频单元；完成标记、标题、追踪参数和 hash 不属于身份。
     function videoUnitContext() {
-        var tab = currentContentTab();
+        var url = new URL(location.href);
         return {
-            url: location.href,
-            label: tab ? cleanText(tab.getAttribute('aria-label') || tab.textContent || '').replace(/[（(]已完成[）)]/g, '').trim() : ''
+            path: url.pathname.replace(/\/+$/, ''),
+            term: url.searchParams.get('tid') || '',
+            unit: url.searchParams.get('unitId') || ''
         };
     }
 
     function readVideoUnitCompletion(context) {
-        if (location.href !== context.url) return 'changed';
+        var current = videoUnitContext();
+        var changed = current.path !== context.path ||
+            (context.term && current.term && context.term !== current.term) ||
+            (context.unit && current.unit && context.unit !== current.unit);
+        if (changed) {
+            recordRunEvent('unit-change', '确认课件已切换：' + JSON.stringify(context) + ' → ' + JSON.stringify(current));
+            return 'changed';
+        }
+        // 单元参数或目录暂时消失时继续等待，不把渲染过程误判为切课。
+        if ((context.unit && !current.unit) || (context.term && !current.term)) return 'unknown';
         var tab = currentContentTab();
         if (!tab) return 'unknown';
         var label = cleanText(tab.getAttribute('aria-label') || tab.textContent || '');
-        var identity = label.replace(/[（(]已完成[）)]/g, '').trim();
-        if (context.label && identity !== context.label) return 'changed';
         if (/未完成|未学完|未学习/.test(label)) return 'pending';
         if (/[（(]已完成[）)]/.test(label) || tab.querySelector('.lucide-circle-check, [aria-label="已完成"]')) return 'complete';
         return 'pending';
@@ -938,21 +952,21 @@
         logDebug('type', 'other：未命中视频/文档/讨论/测验特征（富文本/节标题页等）');
         return 'other';
     }
-    var LEARN_STATE_KEY = 'mooc.merged.learn.state.v1'; // v2：清掉旧版残留的脏计划
+    var LEARN_STATE_KEY = 'mooc.merged.learn.state.v2'; // 每个标签页独立，刷新后保留；不导入旧的共享计划
 
     function learnSaveState(st) {
-        try { localStorage.setItem(LEARN_STATE_KEY, JSON.stringify(st)); } catch (e) { logDebug('state', '无法保存学习计划，刷新后可能中断：' + e.message); }
+        try { sessionStorage.setItem(LEARN_STATE_KEY, JSON.stringify(st)); } catch (e) { logDebug('state', '无法保存学习计划，刷新后可能中断：' + e.message); }
     }
     function learnLoadState() {
         try {
-            var s = localStorage.getItem(LEARN_STATE_KEY);
+            var s = sessionStorage.getItem(LEARN_STATE_KEY);
             if (!s) return null;
             var o = JSON.parse(s);
             return o && o.running ? o : null;
         } catch (e) { return null; }
     }
     function learnClearState() {
-        try { localStorage.removeItem(LEARN_STATE_KEY); } catch (e) {}
+        try { sessionStorage.removeItem(LEARN_STATE_KEY); } catch (e) {}
     }
     function waitForElement(selector, timeout, root) {
         return new Promise(function (resolve) {
@@ -1384,7 +1398,7 @@
         var autoNext = document.querySelector('input.j-autoNext');
         if (autoNext && autoNext.checked) { realClick(autoNext); updateStatus('已关闭平台自带的“自动播放下一集”'); }
 
-        learnSaveState({ running: true, course: location.pathname.replace(/\/content\/\d+.*$/, '') || location.pathname, lastType: null });
+        learnSaveState({ running: true, course: location.pathname.replace(/\/content\/\d+.*$/, '') || location.pathname, term: new URL(location.href).searchParams.get('tid') || '', lastType: null });
         setFloatVisible(true);
         logDebug('learn', '🚀 手动开始自动学习，课程=' + location.pathname.slice(0, 60));
         updateStatus('🚀 自动学习开始：视频依次播放，文档自动翻页，其他内容跳过...');
@@ -1393,7 +1407,8 @@
     function resumeLearn() {
         var st = learnLoadState();
         if (!st) return;
-        if (st.course && location.pathname.indexOf(st.course) !== 0) {
+        if ((st.course && (location.pathname.replace(/\/content\/\d+.*$/, '').replace(/\/+$/, '') !== st.course.replace(/\/+$/, ''))) ||
+            (st.term && new URL(location.href).searchParams.get('tid') && st.term !== new URL(location.href).searchParams.get('tid'))) {
             recordRunEvent('course', '课程路径改变，取消旧课程的自动续跑');
             learnClearState(); return;
         }

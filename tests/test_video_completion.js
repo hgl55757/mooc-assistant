@@ -3,7 +3,7 @@ const source=fs.readFileSync('mooc-assistant.user.js','utf8');
 new Function(source);
 let now=0,tab=null,video=null,config={},step=()=>{};
 const logs=[];
-const context={console:{log(){},warn(){},error(){}},setTimeout(){},clearTimeout(){},
+const context={URL,console:{log(){},warn(){},error(){}},setTimeout(){},clearTimeout(){},
  GM_getValue:(k,f)=>f,GM_setValue(){},GM_addStyle(){},
  document:{readyState:'complete',querySelectorAll(){return [];},querySelector(){return null;},getElementById(){return null;},body:{textContent:''}},
  location:{href:'https://www.icourse163.org/mooc/learn/X/content/1?unitId=1',pathname:'/mooc/learn/X/content/1',hash:''},
