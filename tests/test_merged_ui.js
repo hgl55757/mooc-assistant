@@ -50,6 +50,8 @@ assert.strictEqual(document.getElementById('mar-blank-separator').value,'，');
 assert.strictEqual(document.getElementById('mar-quiz-submit').checked,true);
 assert(!document.getElementById('mar-one'));
 assert(!document.getElementById('mar-discuss-reply'));
+assert(!document.getElementById('mar-completion-wait'));
+assert(!document.getElementById('mar-completion-timeout'));
 context.uiTest.showLlmConfigPanel();
 assert(document.getElementById('cf-apiKey'));
 assert.strictEqual(document.getElementById('cf-apiKey').attrs.value,'');

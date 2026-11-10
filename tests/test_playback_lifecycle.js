@@ -15,13 +15,13 @@ const events=()=>JSON.parse(storage.get('mooc.merged.run.events.v2')||'[]');
 function reset(){storage.clear();logs.length=0;Object.assign(t.taskState,{running:false,cancelled:false,stopReason:'',outcomeRecorded:false,lastStatus:''});t.set('manualWaitFlag',false);}
 (async()=>{
  // 视频停在123秒：启动不能改写currentTime，已经结束也不能调用play重播。
- reset();let writes=0,plays=0,waits=0,time=123;
+ reset();let writes=0,plays=0,time=123;
  const video={duration:300,ended:false,paused:true,addEventListener(){},get currentTime(){return time;},set currentTime(value){writes++;time=value;}};
  t.set('waitForVideo',async()=>video);t.set('videoUnitContext',()=>({url:context.location.href}));
  t.set('playVideo',async()=>{plays++;assert.strictEqual(video.currentTime,123);t.taskState.cancelled=true;});
  await t.learnVideoItem();assert.strictEqual(writes,0);assert.strictEqual(plays,1);
- t.taskState.cancelled=false;video.ended=true;t.set('waitVideoCompletion',async()=>{waits++;return true;});
- assert.strictEqual(await t.learnVideoItem(),true);assert.strictEqual(plays,1);assert.strictEqual(waits,1);
+ t.taskState.cancelled=false;video.ended=true;
+ assert.strictEqual(await t.learnVideoItem(),true);assert.strictEqual(plays,1);
  // 真实停止和程序触发必须留下不同的持久化记录，且不被通用取消覆盖。
  for(const trusted of [true,false]){
   reset();await t.runGuarded(async()=>{t.requestStop({isTrusted:trusted});throw t.makeCancelError();});

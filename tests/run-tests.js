@@ -1,5 +1,5 @@
 const fs=require('fs'), cp=require('child_process');
-const tests=['test_merged.js','test_merged_ui.js','test_video_completion.js','test_playback_lifecycle.js','test_unit_identity.js','test_platform_autonext.js','test_tab_navigation.js'];
+const tests=['test_merged.js','test_merged_ui.js','test_video_end.js','test_playback_lifecycle.js','test_unit_identity.js','test_platform_autonext.js','test_tab_navigation.js'];
 let failed=false;
 for(const file of tests){
  const result=cp.spawnSync(process.execPath,[],{input:fs.readFileSync('tests/'+file,'utf8'),encoding:'utf8',cwd:process.cwd()});
