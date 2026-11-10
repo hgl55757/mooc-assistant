@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC 学习测验助手
 // @namespace    mooc-learning-quiz-merged
-// @version      1.0.2
+// @version      1.0.3
 // @description  自动学习视频与文档，跳过讨论；视频弹题自动处理并继续学习；自选题模式只做选择、判断和填空。
 // @author       based on weiy02/ChinaMOOC-Auto and icourse-auto
 // @license      MIT
@@ -87,7 +87,7 @@
         if (!el) return;
         var types = ['mousedown', 'mouseup', 'click'];
         for (var i = 0; i < types.length; i++) {
-            el.dispatchEvent(new MouseEvent(types[i], { bubbles: true, cancelable: true, view: window }));
+            el.dispatchEvent(new MouseEvent(types[i], { bubbles: true, cancelable: true }));
         }
     }
     function readStore(key, fallback) {
