@@ -1,10 +1,14 @@
 // ==UserScript==
 // @name         中国大学MOOC 学习测验助手
 // @namespace    mooc-learning-quiz-merged
-// @version      1.0.8
+// @version      1.0.9
 // @description  自动学习视频与文档，跳过讨论；视频弹题自动处理并继续学习；自选题模式只做选择、判断和填空。
 // @author       based on weiy02/ChinaMOOC-Auto and icourse-auto
 // @license      MIT
+// @homepageURL  https://github.com/hgl55757/mooc-assistant
+// @supportURL   https://github.com/hgl55757/mooc-assistant/issues
+// @updateURL    https://raw.githubusercontent.com/hgl55757/mooc-assistant/main/mooc-assistant.user.js
+// @downloadURL  https://raw.githubusercontent.com/hgl55757/mooc-assistant/main/mooc-assistant.user.js
 // @match        *://www.icourse163.org/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
@@ -15,7 +19,35 @@
 // @run-at       document-idle
 // ==/UserScript==
 
-// 基于 weiy02/ChinaMOOC-Auto 与用户提供的 icourse-auto；保留 MIT 许可。
+/*
+MIT License
+
+Copyright (c) 2026 Yi Wang
+Copyright (c) 2026 Azureus (modifications)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Third-party sources:
+- weiy02/ChinaMOOC-Auto: https://github.com/weiy02/ChinaMOOC-Auto
+- haoduoyv, icourse-auto: https://scriptcat.org/en/script-show-page/6282
+*/
+
 (function () {
     'use strict';
     var CONFIG = {
@@ -1406,7 +1438,7 @@
         var itemContext = videoUnitContext();
         var itemVideo = findVideo();
         var previousPlayer = { video: itemVideo, source: itemVideo ? (itemVideo.currentSrc || itemVideo.src || '') : '' };
-        recordRunEvent('item', 'v1.0.8 处理内容：类型=' + type + '，标签「' + contentTabKey(currentContentTab()) + '」');
+        recordRunEvent('item', 'v1.0.9 处理内容：类型=' + type + '，标签「' + contentTabKey(currentContentTab()) + '」');
         var done = true;
 
         if (type === 'video') {
@@ -2283,7 +2315,7 @@
         taskState.stopReason = ''; taskState.outcomeRecorded = false;
         setButtonsRunning(true);
         var name = fn === learnChapter || fn === learnOne ? '自动学习' : '测验';
-        recordRunEvent(resumed ? 'resume' : 'start', (resumed ? '页面刷新后恢复' : '开始') + name + '（v1.0.8）');
+        recordRunEvent(resumed ? 'resume' : 'start', (resumed ? '页面刷新后恢复' : '开始') + name + '（v1.0.9）');
         if (resumed) updateStatus('▶ 正在恢复自动学习，从播放器当前进度继续...');
         try {
             await fn();
