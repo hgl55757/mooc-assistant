@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC 学习测验助手
 // @namespace    mooc-learning-quiz-merged
-// @version      1.0.5
+// @version      1.0.6
 // @description  自动学习视频与文档，跳过讨论；视频弹题自动处理并继续学习；自选题模式只做选择、判断和填空。
 // @author       based on weiy02/ChinaMOOC-Auto and icourse-auto
 // @license      MIT
@@ -681,12 +681,45 @@
         };
     }
 
-    function readVideoUnitCompletion(context) {
-        var current = videoUnitContext();
-        var changed = current.path !== context.path ||
+    function contentUnitChanged(context, current) {
+        return current.path !== context.path ||
             (context.term && current.term && context.term !== current.term) ||
             (context.unit && current.unit && context.unit !== current.unit);
-        if (changed) {
+    }
+
+    function followCurrentContent(context) {
+        if (taskState.cancelled) throw makeCancelError();
+        var current = videoUnitContext();
+        var course = function (path) { return path.replace(/\/content\/\d+$/, ''); };
+        if (!/\/content\/\d+$/.test(current.path) || course(context.path) !== course(current.path) ||
+            (context.term && current.term && context.term !== current.term)) {
+            throw makeCancelError('已离开原课程或学期，停止旧课程任务');
+        }
+        recordRunEvent('follow', '同课程内容已切换，接着处理当前项，不重复点击下一节：' + JSON.stringify(context) + ' → ' + JSON.stringify(current));
+        updateStatus('➡️ 页面已进入下一项，接着学习当前内容...');
+        return 'navigated';
+    }
+
+    // 平台可能先更新路由再替换播放器，不能把残留的旧 ended 视频当作新视频。
+    async function waitForSwitchedPlayer(previous) {
+        var started = Date.now();
+        while (Date.now() - started < CONFIG.LEARN_CONTENT_READY_WAIT) {
+            if (taskState.cancelled) throw makeCancelError();
+            var video = findVideo();
+            if (!video) return true; // 文档等内容交给正常的内容就绪检查。
+            if (!previous.video || video !== previous.video) return true;
+            var source = video.currentSrc || video.src || '';
+            if (previous.source && source && source !== previous.source) return true;
+            if (!previous.source && !video.ended && !video.__marEndedFlag) return true;
+            await sleep(500);
+        }
+        updateStatus('⚠️ 页面已切换，但旧播放器尚未替换，自动学习暂停，请检查页面');
+        return false;
+    }
+
+    function readVideoUnitCompletion(context) {
+        var current = videoUnitContext();
+        if (contentUnitChanged(context, current)) {
             recordRunEvent('unit-change', '确认课件已切换：' + JSON.stringify(context) + ' → ' + JSON.stringify(current));
             return 'changed';
         }
@@ -711,7 +744,7 @@
             if (taskState.cancelled) throw makeCancelError();
             if (manualWaitFlag) { logDebug('video', '用户手动跳过完成状态等待'); return true; }
             state = readVideoUnitCompletion(context);
-            if (state === 'changed') throw makeCancelError('页面或视频单元已切换，停止等待原视频完成状态（非停止按钮）');
+            if (state === 'changed') return followCurrentContent(context);
             if (state === 'complete' && Date.now() - started >= grace) {
                 logDebug('video', '已确认当前视频单项完成（等待 ' + ((Date.now() - started) / 1000).toFixed(1) + ' 秒）');
                 updateStatus('✅ 当前视频完成状态已确认，准备跳转');
@@ -722,7 +755,7 @@
         if (taskState.cancelled) throw makeCancelError();
         if (manualWaitFlag) return true;
         state = readVideoUnitCompletion(context);
-        if (state === 'changed') throw makeCancelError('页面或视频单元已切换，停止等待原视频完成状态（非停止按钮）');
+        if (state === 'changed') return followCurrentContent(context);
         if (state === 'complete') { logDebug('video', '等待结束时已确认当前视频完成'); return true; }
         logDebug('video', 'UNCONFIRMED：视频已结束，但 ' + timeoutSeconds + ' 秒内未确认单项完成，状态=' + state);
         if (cfg.videoCompletionTimeout === 'pause') {
@@ -755,6 +788,7 @@
         var lastAnswerAt = 0;
         var lastRetry = 0;
         while (!taskState.cancelled) {
+            if (contentUnitChanged(completionContext, videoUnitContext())) return followCurrentContent(completionContext);
             video = findVideo() || video;
             applyVideoRate(video); // 持续应用倍速（切清晰度/拖动进度后平台可能重置）
             if (manualWaitFlag) { logDebug('video', '用户点击【下一节】，跳过当前视频'); updateStatus('⏭ 用户点击【下一节】，跳过当前视频'); return true; }
@@ -1367,6 +1401,9 @@
         } else {
             type = detectContentType();
         }
+        var itemContext = videoUnitContext();
+        var itemVideo = findVideo();
+        var previousPlayer = { video: itemVideo, source: itemVideo ? (itemVideo.currentSrc || itemVideo.src || '') : '' };
         var done = true;
 
         if (type === 'video') {
@@ -1386,6 +1423,17 @@
         }
         st.lastType = type;
         learnSaveState(st);
+        // 平台可能在播放循环中、完成等待中或刚结束等待时自行跳转。
+        // 此时重新处理当前页面，绝不再点击一次“下一项”。
+        if (done === 'navigated' || contentUnitChanged(itemContext, videoUnitContext())) {
+            if (done !== 'navigated') followCurrentContent(itemContext);
+            if (!await waitForSwitchedPlayer(previousPlayer)) {
+                finishRun('pause', taskState.lastStatus || '切换后播放器未就绪');
+                return;
+            }
+            await learnOne();
+            return;
+        }
         var ok = await goNext();
         if (!ok) { finishRun('navigation', '导航结束：' + (taskState.lastStatus || '未能确认下一项')); return; }
         await learnOne();

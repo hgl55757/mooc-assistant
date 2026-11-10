@@ -32,7 +32,8 @@ function reset(){now=0;logs.length=0;step=()=>{};tab=makeTab();config={videoComp
  reset();tab=null;c=t.videoUnitContext();assert.strictEqual(await t.waitVideoCompletion(c),true);assert.strictEqual(now,5000);
  reset();c=t.videoUnitContext();step=()=>{if(now>=500)t.taskState.cancelled=true;};await assert.rejects(t.waitVideoCompletion(c),e=>e.__cancelled);
  reset();c=t.videoUnitContext();step=()=>{if(now>=500)t.set('manualWaitFlag',true);};assert.strictEqual(await t.waitVideoCompletion(c),true);assert.strictEqual(now,500);
- reset();c=t.videoUnitContext();step=()=>{if(now>=500)context.location.href+='2';};await assert.rejects(t.waitVideoCompletion(c),e=>e.__cancelled);
+ reset();c=t.videoUnitContext();step=()=>{if(now>=500)context.location.href+='2';};assert.strictEqual(await t.waitVideoCompletion(c),'navigated');
+ reset();c=t.videoUnitContext();step=()=>{if(now>=500)context.location.href=context.location.href.replace('/X/','/Y/');};await assert.rejects(t.waitVideoCompletion(c),e=>e.__cancelled);
  // 完整视频循环：剩余1.5秒不跳转，只有真实ended后才进入完成确认。
  reset();video={duration:10,currentTime:8.5,ended:false,paused:false,addEventListener(){}};
  let observedNearEnd=false;
