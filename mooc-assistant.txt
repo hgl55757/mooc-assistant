@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC 学习测验助手
 // @namespace    mooc-learning-quiz-merged
-// @version      1.0.1
+// @version      1.0.2
 // @description  自动学习视频与文档，跳过讨论；视频弹题自动处理并继续学习；自选题模式只做选择、判断和填空。
 // @author       based on weiy02/ChinaMOOC-Auto and icourse-auto
 // @license      MIT
@@ -15,29 +15,22 @@
 // @run-at       document-idle
 // ==/UserScript==
 
-// 自动学习基于 weiy02/ChinaMOOC-Auto；测验解析、填写与 LLM 配置基于用户提供的 icourse-auto 脚本。
-// 本文件不含 API Key，不导入旧脚本的密钥配置。
+// 基于 weiy02/ChinaMOOC-Auto 与用户提供的 icourse-auto；保留 MIT 许可。
 (function () {
     'use strict';
     var CONFIG = {
         DELAY_AFTER_CLICK: 300,
         CANCEL_POLL_INTERVAL: 60,
-        // ---- 自动学习（新版学习页 #/learn/content?type=detail&id=xxx）----
         LEARN_DOC_PAGE_MS: 1000,        // 文档每页停留 1 秒（用户要求）
         LEARN_NAV_WAIT: 5000,           // 切换内容后的加载等待上限
         LEARN_QUIZ_RESUME_WAIT: 8000,   // 提交视频弹题后，等待视频自动恢复播放的最长时间
-        LEARN_QUIZ_VISIT_MS: 2500,      // （测验改为直接跳过，不再停留；此值保留作兜底）
-        LEARN_OTHER_VISIT_MS: 10000,    // 富文本等其它内容停留 10 秒后自动跳转（用户要求）
         LEARN_CONTENT_READY_WAIT: 15000, // 内容加载就绪的最大等待时间（修复“没加载完就跳转”）
         LEARN_IDLE_POLL: 600,           // 视频监控轮询间隔（毫秒）
         LEARN_MAX_PAGE_FLIPS: 600,      // 单个文档最多翻多少页（保险上限）
-        LEARN_MAX_ITEMS: 200,           // 单章最多处理多少内容（保险上限）
     };
 
     var PAGE_CONFIG = {
-        // 考试页：只能提交一次、可能有时限，风险最高，优先识别
         examUrl: /examObject|examIndex|examPaper|\/learn\/exam/i,
-        // 答题页：测验 / 单元作业客观题 / 考试
         quizUrl: /quizObject|quizIndex|testObject|\/learn\/quiz|\/learn\/test|homeworkObject|\/learn\/homework/i,
     };
 
@@ -60,8 +53,6 @@
             tick();
         });
     }
-
-    // 带提前退出的等待：early() 返回 true（如用户点了【下一节】）时立即结束
     function sleepWhile(ms, early) {
         return new Promise(function (resolve, reject) {
             var start = Date.now();
@@ -84,8 +75,6 @@
         }
         return false;
     }
-
-    // ===================== 基础工具 =====================
     function isVisible(el) {
         if (!el) return false;
         var s = getComputedStyle(el);
@@ -101,22 +90,6 @@
             el.dispatchEvent(new MouseEvent(types[i], { bubbles: true, cancelable: true, view: window }));
         }
     }
-
-    function setNativeValue(el, value) {
-        if (!el) return;
-        var proto = el.tagName === 'TEXTAREA'
-            ? window.HTMLTextAreaElement.prototype
-            : window.HTMLInputElement.prototype;
-        var descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
-        var setter = descriptor ? descriptor.set : null;
-        if (setter) setter.call(el, value); else el.value = value;
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-
-    // ===================== 本地存储 =====================
-    // 只有 localStorage 一条来源。读写都要吞掉异常：隐私模式下 localStorage
-    // 会直接抛，而存的是开关状态和回复留痕这类非关键数据，不能因为存不下就崩。
     function readStore(key, fallback) {
         try {
             var raw = localStorage.getItem(key);
@@ -137,21 +110,6 @@
             return false;
         }
     }
-
-    // ===================== 解除复制限制 =====================
-    // 慕课的课件、字幕、题目普遍禁止选中与复制，手段通常是三类：
-    //   1. CSS：在 body 或内容容器上设 user-select: none
-    //   2. 事件：在 document/body 上挂 copy / cut / selectstart / contextmenu /
-    //      dragstart 的处理器，或直接给 on* 属性赋值并 return false
-    //   3. 键盘：拦截 Ctrl/⌘ + C / X / A 并 preventDefault
-    // 对应两种反制：
-    //   - 注入带 !important 的样式表。样式表里的 !important 优先于元素的行内样式，
-    //     所以即便站点用 JS 写 body.style.userSelect = 'none' 也压不过它。
-    //   - 在 window 的【捕获阶段】掐断事件传播。捕获阶段 window 早于 document，
-    //     所以比站点挂在 document 上的捕获监听还早。
-    //     关键是只掐传播、不调 preventDefault —— 浏览器的选中/复制/右键菜单等
-    //     默认行为必须保留，否则连正常功能一起取消掉了；而站点挂的拦截逻辑
-    //     收不到事件，自然也就拦不住。
     var COPY_UNLOCK = {
         STYLE_ID: 'mar-copy-unlock-style',
         KEY: 'mar.copyUnlock',
@@ -176,9 +134,6 @@
     function copyUnlockHandler(e) {
         e.stopImmediatePropagation();
     }
-
-    // 只拦「复制 / 剪切 / 全选」组合键。不这么收窄的话，在 window 捕获阶段
-    // 拦掉全部 keydown 会把站点的搜索框和快捷键一起弄坏。
     function copyUnlockKeydown(e) {
         var k = String(e.key || '').toLowerCase();
         if ((e.ctrlKey || e.metaKey) && (k === 'c' || k === 'x' || k === 'a')) {
@@ -240,7 +195,6 @@
         return String(s === null || s === undefined ? '' : s).replace(/\s+/g, ' ').trim();
     }
 
-
     function collectCandidates(scope, selectors, limit) {
         var out = [], seen = [];
         for (var s = 0; s < selectors.length && out.length < limit; s++) {
@@ -254,7 +208,6 @@
         }
         return out;
     }
-
 
     async function dismissModal() {
         await sleep(500);
@@ -277,7 +230,6 @@
         return false;
     }
 
-
     function showTextOverlay(title, text, onSave) {
         var old = document.getElementById('mar-probe-overlay');
         if (old && old.parentNode) old.parentNode.removeChild(old);
@@ -296,8 +248,6 @@
             '<textarea id="mar-probe-text" spellcheck="false"></textarea>'
         ].join('');
         document.body.appendChild(overlay);
-
-        // 标题用 textContent 赋值，避免把内容里的尖括号当 HTML 解析
         document.getElementById('mar-probe-title').textContent = title;
 
         var ta = document.getElementById('mar-probe-text');
@@ -322,16 +272,10 @@
             });
         }
     }
-    // ===================== 状态栏 & 按钮 =====================
     var statusEl = null;
-    // ===================== 开发者调试日志 =====================
-    // 目的：记录「检测到了什么、走到了哪一步、为什么这样决策」，
-    // 便于开发者排查问题（不是给使用者看完成情况）。面板「日志」页签可查看/复制/清空。
     var debugLogs = [];
     var DEBUG_LOG_MAX = 500;      // 内存里最多保留多少条，超出丢最旧
     var DEBUG_LOG_SHOW = 120;     // 面板里最多展示多少条
-
-    // 追加一条调试日志。cat 是分类标签（type/nav/menu/learn/video/doc/quiz/status/err…）
     function logDebug(cat, msg) {
         var t = new Date();
         var ts = ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2) + ':' + ('0' + t.getSeconds()).slice(-2) + '.' + ('00' + t.getMilliseconds()).slice(-3);
@@ -340,8 +284,6 @@
         try { console.log('[MOOC:' + cat + ']', ts, msg); } catch (e) {}
         refreshLogBox();
     }
-
-    // 把日志渲染进面板（只在日志页签可见时渲染，避免高频操作拖慢页面）
     function escHtml(s) {
         return String(s === null || s === undefined ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
@@ -362,8 +304,6 @@
         debugLogs = [];
         refreshLogBox();
     }
-
-    // 复制日志到剪贴板（格式：时间 [分类] 消息，每行一条）
     function copyDebugLogs() {
         var text = debugLogs.map(function (l) { return l.t + ' [' + l.cat + '] ' + l.msg; }).join('\n');
         if (!text) { updateStatus('暂无日志可复制'); return; }
@@ -387,18 +327,12 @@
         if (statusEl) statusEl.textContent = msg;
         logDebug('status', msg);
     }
-
-    // 按选择器收集而不是硬编码 id 列表。原来那份硬编码清单是个持续的坑：
-    // 每加一个按钮都得记得往数组里补一条，漏了就变成「运行期间还能点」。
     function setButtonsRunning(isRunning) {
         var btns = document.querySelectorAll('#mooc-auto-review-panel .mar-btn');
         for (var i = 0; i < btns.length; i++) {
             var el = btns[i];
             if (el.id === 'mar-stop') continue;
-            // 开关类按钮（解除复制）与任务状态无关，
-            // 任务跑着的时候也应该能随时切换
             if (el.classList.contains('mar-toggle')) continue;
-            // 日志按钮同理：跑着的时候也需要能复制/清空日志排查问题
             if (el.id === 'mar-log-copy' || el.id === 'mar-log-clear') continue;
             el.disabled = isRunning;
         }
@@ -412,240 +346,68 @@
         if (document.getElementById('mar-glass-styles')) return;
         var style = document.createElement('style');
         style.id = 'mar-glass-styles';
-        style.textContent = [
-            '#mooc-auto-review-panel {',
-            '  position: fixed !important;',
-            '  top: 100px; right: 20px;',
-            '  z-index: 2147483647 !important;',
-            '  width: 252px;',
-            '  border-radius: 18px;',
-            '  overflow: hidden;',
-            '  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;',
-            '  color: #1c1c1e;',
-            '  user-select: none;',
-            '  background: rgba(252, 252, 254, 0.68);',
-            '  backdrop-filter: blur(32px) saturate(180%);',
-            '  -webkit-backdrop-filter: blur(32px) saturate(180%);',
-            '  border: 1px solid rgba(255, 255, 255, 0.75);',
-            '  box-shadow:',
-            '    0 12px 32px -8px rgba(15, 20, 40, 0.18),',
-            '    0 2px 8px -2px rgba(15, 20, 40, 0.08),',
-            '    inset 0 1px 0 rgba(255, 255, 255, 0.95),',
-            '    inset 0 -1px 0 rgba(255, 255, 255, 0.35);',
-            '}',
-            '#mar-header {',
-            '  display: flex; justify-content: space-between; align-items: center;',
-            '  padding: 11px 14px; cursor: move;',
-            '  font-size: 13px; font-weight: 600; letter-spacing: 0.01em;',
-            '  color: #1c1c1e;',
-            '  background: rgba(255, 255, 255, 0.22);',
-            '  border-bottom: 1px solid rgba(255, 255, 255, 0.55);',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);',
-            '}',
-            '#mar-title { display: flex; align-items: center; gap: 7px; }',
-            '#mar-title .mar-dot {',
-            '  width: 7px; height: 7px; border-radius: 50%;',
-            '  background: #4a90e2;',
-            '  box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.6);',
-            '}',
-            '#mar-minimize {',
-            '  cursor: pointer; width: 22px; height: 22px;',
-            '  display: flex; align-items: center; justify-content: center;',
-            '  border-radius: 50%;',
-            '  background: rgba(255, 255, 255, 0.55);',
-            '  border: 1px solid rgba(255, 255, 255, 0.8);',
-            '  font-size: 13px; line-height: 1; color: #3a3a3c;',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(0, 0, 0, 0.05);',
-            '  transition: background 0.18s ease, transform 0.18s ease;',
-            '}',
-            '#mar-minimize:hover { background: rgba(255, 255, 255, 0.85); transform: scale(1.06); }',
-            '#mar-minimize:active { transform: scale(0.94); }',
-            // 选项卡：分段控件样式，选中项是一枚浮起的白色药丸
-            '#mar-tabs {',
-            '  display: flex; gap: 3px;',
-            '  padding: 7px 9px 0;',
-            '}',
-            '.mar-tab {',
-            '  position: relative; flex: 1;',
-            '  padding: 6px 4px; border: 1px solid transparent;',
-            '  border-radius: 9px;',
-            '  background: transparent;',
-            '  font-family: inherit; font-size: 12px; font-weight: 500;',
-            '  color: #7a7a80; cursor: pointer;',
-            '  transition: color 0.16s ease, background 0.16s ease;',
-            '}',
-            '.mar-tab:hover:not(.mar-active) { color: #1c1c1e; background: rgba(255, 255, 255, 0.34); }',
-            '.mar-tab.mar-active {',
-            '  color: #1c1c1e; font-weight: 600;',
-            '  background: rgba(255, 255, 255, 0.62);',
-            '  border-color: rgba(255, 255, 255, 0.75);',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(15, 20, 40, 0.05);',
-            '}',
-            // 视图：同一时刻只有一个 .mar-pane 是 flex
-            '.mar-pane { display: none; flex-direction: column; gap: 7px; }',
-            '.mar-pane.mar-active { display: flex; }',
-            '#mar-body { padding: 10px 12px; }',
-            // 状态栏和停止按钮独立于选项卡：切到哪个视图都能看到进度、都能停
-            '#mar-foot { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 7px; }',
-            '.mar-btn {',
-            '  position: relative; display: flex; align-items: center; gap: 9px;',
-            '  padding: 9px 12px; border-radius: 11px;',
-            '  border: 1px solid rgba(255, 255, 255, 0.75);',
-            '  background: rgba(255, 255, 255, 0.42);',
-            '  color: #1c1c1e; font-family: inherit;',
-            '  font-size: 12.5px; font-weight: 500; text-align: left;',
-            '  cursor: pointer;',
-            '  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 2px rgba(15, 20, 40, 0.05);',
-            '  transition: background 0.18s ease, transform 0.14s ease, box-shadow 0.18s ease;',
-            '}',
-            '.mar-btn::before {',
-            '  content: ""; width: 6px; height: 6px; border-radius: 50%;',
-            '  flex-shrink: 0; background: #94a3b8;',
-            '  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);',
-            '  transition: transform 0.18s ease;',
-            '}',
-            '#mar-one::before   { background: #4a90e2; }',
-            '#mar-batch::before { background: #34a853; }',
-            '#mar-auto::before  { background: #f5a623; }',
-            '#mar-fix::before   { background: #8b5cf6; }',
-            '#mar-discuss-preview::before { background: #0ea5e9; }',
-            '#mar-discuss-reply::before   { background: #22c55e; }',
-            '#mar-learn-start::before    { background: #f97316; }',
-            '#mar-learn-probe::before    { background: #14b8a6; }',
-            '#mar-stop::before  { background: #e53e3e; }',
-            '.mar-btn:hover:not(:disabled) {',
-            '  background: rgba(255, 255, 255, 0.72); transform: translateY(-1px);',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 1), 0 4px 10px -2px rgba(15, 20, 40, 0.12);',
-            '}',
-            '.mar-btn:hover:not(:disabled)::before { transform: scale(1.15); }',
-            '.mar-btn:active:not(:disabled) {',
-            '  transform: translateY(0); background: rgba(255, 255, 255, 0.5);',
-            '  box-shadow: inset 0 1px 3px rgba(15, 20, 40, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6);',
-            '}',
-            '.mar-btn:disabled { opacity: 0.42; cursor: not-allowed; filter: saturate(0.4); }',
-            '#mar-fix:not(:disabled) { color: #6d28d9; background: rgba(243, 236, 255, 0.55); border-color: rgba(200, 180, 255, 0.8); }',
-            '#mar-fix:hover:not(:disabled) {',
-            '  background: rgba(238, 226, 255, 0.85);',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 1), 0 4px 12px -2px rgba(109, 40, 217, 0.22);',
-            '}',
-            '#mar-stop:not(:disabled) { color: #b42318; background: rgba(255, 236, 236, 0.6); border-color: rgba(255, 200, 200, 0.8); }',
-            '#mar-stop:hover:not(:disabled) {',
-            '  background: rgba(255, 224, 224, 0.85);',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 1), 0 4px 12px -2px rgba(180, 35, 24, 0.22);',
-            '}',
-            // 停止按钮平时不占地方，只有任务在跑时才由 setButtonsRunning() 放出来
-            '#mar-stop { display: none; }',
-            '#mar-status {',
-            '  padding: 9px 11px; border-radius: 10px;',
-            '  background: rgba(255, 255, 255, 0.3);',
-            '  border: 1px solid rgba(255, 255, 255, 0.55);',
-            '  box-shadow: inset 0 1px 2px rgba(15, 20, 40, 0.04), inset 0 -1px 0 rgba(255, 255, 255, 0.6);',
-            '  font-size: 11.5px; line-height: 1.5; color: #3a3a3c;',
-            '  min-height: 16px; word-break: break-all;',
-            '  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);',
-            '}',
-            '#mar-copy-unlock::before { background: #64748b; }',
-            // 日志框：等宽小字 + 可滚动 + 底部自动跟随
-            '.mar-log-box {',
-            '  height: 150px; overflow-y: auto;',
-            '  padding: 6px 8px; border-radius: 10px;',
-            '  background: rgba(15, 20, 40, 0.92);',
-            '  border: 1px solid rgba(255, 255, 255, 0.18);',
-            '  font-family: Menlo, Consolas, "SF Mono", monospace;',
-            '  font-size: 10.5px; line-height: 1.45;',
-            '  color: #d6dbe6; white-space: pre-wrap; word-break: break-all;',
-            '}',
-            '.mar-log-line { margin: 1px 0; }',
-            '.mar-log-t { color: #8b93a7; margin-right: 4px; }',
-            '.mar-log-cat { color: #7dd3fc; font-weight: 600; }',
-            '.mar-log-empty { color: #8b93a7; padding: 8px 2px; }',
-            // 开启态：绿点 + 淡绿底，一眼能看出复制限制现在是解开的
-            '#mar-copy-unlock.mar-on::before { background: #22c55e; }',
-            '#mar-copy-unlock.mar-on:not(:disabled) {',
-            '  color: #15803d; background: rgba(226, 252, 235, 0.6);',
-            '  border-color: rgba(160, 230, 190, 0.85);',
-            '}',
-            '#mar-copy-unlock.mar-on:hover:not(:disabled) { background: rgba(214, 250, 226, 0.88); }',
-            // 设置项：一行标题 + 下面一行二选一的分段控件
-            '.mar-field {',
-            '  display: flex; flex-direction: column; gap: 6px;',
-            '  padding: 9px 11px; border-radius: 11px;',
-            '  background: rgba(255, 255, 255, 0.3);',
-            '  border: 1px solid rgba(255, 255, 255, 0.55);',
-            '  box-shadow: inset 0 1px 2px rgba(15, 20, 40, 0.04);',
-            '}',
-            '.mar-label { font-size: 11.5px; font-weight: 600; color: #3a3a3c; }',
-            '.mar-hint { font-size: 10.5px; line-height: 1.45; color: #7a7a80; }',
-            '.mar-seg {',
-            '  display: flex; gap: 3px; padding: 3px;',
-            '  border-radius: 9px;',
-            '  background: rgba(255, 255, 255, 0.3);',
-            '  border: 1px solid rgba(255, 255, 255, 0.6);',
-            '}',
-            '.mar-seg-btn {',
-            '  flex: 1; padding: 6px 4px;',
-            '  border: 1px solid transparent; border-radius: 7px;',
-            '  background: transparent;',
-            '  font-family: inherit; font-size: 11.5px; font-weight: 500;',
-            '  color: #7a7a80; cursor: pointer;',
-            '  transition: color 0.16s ease, background 0.16s ease;',
-            '}',
-            '.mar-seg-btn:hover:not(.mar-active) { color: #1c1c1e; background: rgba(255, 255, 255, 0.4); }',
-            '.mar-seg-btn.mar-active {',
-            '  color: #1c1c1e; font-weight: 600;',
-            '  background: rgba(255, 255, 255, 0.75);',
-            '  border-color: rgba(255, 255, 255, 0.85);',
-            '  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(15, 20, 40, 0.06);',
-            '}',
-            // 探针结果浮层：只读诊断用，全选复制
-            '#mar-probe-overlay {',
-            '  position: fixed !important;',
-            '  top: 5vh; left: 50%; transform: translateX(-50%);',
-            '  width: min(900px, 92vw); height: 90vh;',
-            '  z-index: 2147483647 !important;',
-            '  display: flex; flex-direction: column;',
-            '  border-radius: 14px; overflow: hidden;',
-            '  background: rgba(28, 28, 32, 0.97);',
-            '  border: 1px solid rgba(255, 255, 255, 0.16);',
-            '  box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.6);',
-            '  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;',
-            '  user-select: text;',
-            '}',
-            '#mar-probe-head {',
-            '  display: flex; justify-content: space-between; align-items: center;',
-            '  gap: 12px; padding: 10px 14px;',
-            '  background: rgba(255, 255, 255, 0.06);',
-            '  border-bottom: 1px solid rgba(255, 255, 255, 0.12);',
-            '  color: #f2f2f7; font-size: 13px; font-weight: 600;',
-            '}',
-            '#mar-probe-actions { display: flex; gap: 8px; }',
-            '#mar-probe-actions .mar-btn {',
-            '  padding: 5px 12px; font-size: 12px; width: auto;',
-            '  color: #f2f2f7; background: rgba(255, 255, 255, 0.12);',
-            '  border: 1px solid rgba(255, 255, 255, 0.2);',
-            '}',
-            '#mar-probe-actions .mar-btn::before { display: none; }',
-            '#mar-probe-actions .mar-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.22); }',
-            '#mar-probe-text {',
-            '  flex: 1; width: 100%; resize: none; border: 0; outline: none;',
-            '  padding: 12px 14px; margin: 0;',
-            '  background: transparent; color: #d7d7dc;',
-            '  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;',
-            '  font-size: 12px; line-height: 1.5;',
-            '  white-space: pre; overflow: auto;',
-            '  user-select: text;',
-            '}',
-        ].join('\n');
+        style.textContent = String.raw`#mooc-auto-review-panel { position: fixed !important; top: 100px; right: 20px; z-index: 2147483647 !important; width: 252px; border-radius: 18px; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; color: #1c1c1e; user-select: none; background: rgba(252, 252, 254, 0.68); backdrop-filter: blur(32px) saturate(180%); -webkit-backdrop-filter: blur(32px) saturate(180%); border: 1px solid rgba(255, 255, 255, 0.75); box-shadow: 0 12px 32px -8px rgba(15, 20, 40, 0.18), 0 2px 8px -2px rgba(15, 20, 40, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.95), inset 0 -1px 0 rgba(255, 255, 255, 0.35); }
+#mar-header { display: flex; justify-content: space-between; align-items: center; padding: 11px 14px; cursor: move; font-size: 13px; font-weight: 600; letter-spacing: 0.01em; color: #1c1c1e; background: rgba(255, 255, 255, 0.22); border-bottom: 1px solid rgba(255, 255, 255, 0.55); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7); }
+#mar-title { display: flex; align-items: center; gap: 7px; }
+#mar-title .mar-dot { width: 7px; height: 7px; border-radius: 50%; background: #4a90e2; box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.6); }
+#mar-minimize { cursor: pointer; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(255, 255, 255, 0.55); border: 1px solid rgba(255, 255, 255, 0.8); font-size: 13px; line-height: 1; color: #3a3a3c; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(0, 0, 0, 0.05); transition: background 0.18s ease, transform 0.18s ease; }
+#mar-minimize:hover { background: rgba(255, 255, 255, 0.85); transform: scale(1.06); }
+#mar-minimize:active { transform: scale(0.94); }
+#mar-tabs { display: flex; gap: 3px; padding: 7px 9px 0; }
+.mar-tab { position: relative; flex: 1; padding: 6px 4px; border: 1px solid transparent; border-radius: 9px; background: transparent; font-family: inherit; font-size: 12px; font-weight: 500; color: #7a7a80; cursor: pointer; transition: color 0.16s ease, background 0.16s ease; }
+.mar-tab:hover:not(.mar-active) { color: #1c1c1e; background: rgba(255, 255, 255, 0.34); }
+.mar-tab.mar-active { color: #1c1c1e; font-weight: 600; background: rgba(255, 255, 255, 0.62); border-color: rgba(255, 255, 255, 0.75); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(15, 20, 40, 0.05); }
+.mar-pane { display: none; flex-direction: column; gap: 7px; }
+.mar-pane.mar-active { display: flex; }
+#mar-body { padding: 10px 12px; }
+#mar-foot { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 7px; }
+.mar-btn { position: relative; display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 11px; border: 1px solid rgba(255, 255, 255, 0.75); background: rgba(255, 255, 255, 0.42); color: #1c1c1e; font-family: inherit; font-size: 12.5px; font-weight: 500; text-align: left; cursor: pointer; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 2px rgba(15, 20, 40, 0.05); transition: background 0.18s ease, transform 0.14s ease, box-shadow 0.18s ease; }
+.mar-btn::before { content: ""; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: #94a3b8; box-shadow: inset 0 1px 0 rgba(255,255,255,0.7); transition: transform 0.18s ease; }
+#mar-one::before { background: #4a90e2; }
+#mar-batch::before { background: #34a853; }
+#mar-auto::before { background: #f5a623; }
+#mar-fix::before { background: #8b5cf6; }
+#mar-discuss-preview::before { background: #0ea5e9; }
+#mar-discuss-reply::before { background: #22c55e; }
+#mar-learn-start::before { background: #f97316; }
+#mar-learn-probe::before { background: #14b8a6; }
+#mar-stop::before { background: #e53e3e; }
+.mar-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.72); transform: translateY(-1px); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 1), 0 4px 10px -2px rgba(15, 20, 40, 0.12); }
+.mar-btn:hover:not(:disabled)::before { transform: scale(1.15); }
+.mar-btn:active:not(:disabled) { transform: translateY(0); background: rgba(255, 255, 255, 0.5); box-shadow: inset 0 1px 3px rgba(15, 20, 40, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6); }
+.mar-btn:disabled { opacity: 0.42; cursor: not-allowed; filter: saturate(0.4); }
+#mar-fix:not(:disabled) { color: #6d28d9; background: rgba(243, 236, 255, 0.55); border-color: rgba(200, 180, 255, 0.8); }
+#mar-fix:hover:not(:disabled) { background: rgba(238, 226, 255, 0.85); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 1), 0 4px 12px -2px rgba(109, 40, 217, 0.22); }
+#mar-stop:not(:disabled) { color: #b42318; background: rgba(255, 236, 236, 0.6); border-color: rgba(255, 200, 200, 0.8); }
+#mar-stop:hover:not(:disabled) { background: rgba(255, 224, 224, 0.85); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 1), 0 4px 12px -2px rgba(180, 35, 24, 0.22); }
+#mar-stop { display: none; }
+#mar-status { padding: 9px 11px; border-radius: 10px; background: rgba(255, 255, 255, 0.3); border: 1px solid rgba(255, 255, 255, 0.55); box-shadow: inset 0 1px 2px rgba(15, 20, 40, 0.04), inset 0 -1px 0 rgba(255, 255, 255, 0.6); font-size: 11.5px; line-height: 1.5; color: #3a3a3c; min-height: 16px; word-break: break-all; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+#mar-copy-unlock::before { background: #64748b; }
+.mar-log-box { height: 150px; overflow-y: auto; padding: 6px 8px; border-radius: 10px; background: rgba(15, 20, 40, 0.92); border: 1px solid rgba(255, 255, 255, 0.18); font-family: Menlo, Consolas, "SF Mono", monospace; font-size: 10.5px; line-height: 1.45; color: #d6dbe6; white-space: pre-wrap; word-break: break-all; }
+.mar-log-line { margin: 1px 0; }
+.mar-log-t { color: #8b93a7; margin-right: 4px; }
+.mar-log-cat { color: #7dd3fc; font-weight: 600; }
+.mar-log-empty { color: #8b93a7; padding: 8px 2px; }
+#mar-copy-unlock.mar-on::before { background: #22c55e; }
+#mar-copy-unlock.mar-on:not(:disabled) { color: #15803d; background: rgba(226, 252, 235, 0.6); border-color: rgba(160, 230, 190, 0.85); }
+#mar-copy-unlock.mar-on:hover:not(:disabled) { background: rgba(214, 250, 226, 0.88); }
+.mar-field { display: flex; flex-direction: column; gap: 6px; padding: 9px 11px; border-radius: 11px; background: rgba(255, 255, 255, 0.3); border: 1px solid rgba(255, 255, 255, 0.55); box-shadow: inset 0 1px 2px rgba(15, 20, 40, 0.04); }
+.mar-label { font-size: 11.5px; font-weight: 600; color: #3a3a3c; }
+.mar-hint { font-size: 10.5px; line-height: 1.45; color: #7a7a80; }
+.mar-seg { display: flex; gap: 3px; padding: 3px; border-radius: 9px; background: rgba(255, 255, 255, 0.3); border: 1px solid rgba(255, 255, 255, 0.6); }
+.mar-seg-btn { flex: 1; padding: 6px 4px; border: 1px solid transparent; border-radius: 7px; background: transparent; font-family: inherit; font-size: 11.5px; font-weight: 500; color: #7a7a80; cursor: pointer; transition: color 0.16s ease, background 0.16s ease; }
+.mar-seg-btn:hover:not(.mar-active) { color: #1c1c1e; background: rgba(255, 255, 255, 0.4); }
+.mar-seg-btn.mar-active { color: #1c1c1e; font-weight: 600; background: rgba(255, 255, 255, 0.75); border-color: rgba(255, 255, 255, 0.85); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(15, 20, 40, 0.06); }
+#mar-probe-overlay { position: fixed !important; top: 5vh; left: 50%; transform: translateX(-50%); width: min(900px, 92vw); height: 90vh; z-index: 2147483647 !important; display: flex; flex-direction: column; border-radius: 14px; overflow: hidden; background: rgba(28, 28, 32, 0.97); border: 1px solid rgba(255, 255, 255, 0.16); box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.6); font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; user-select: text; }
+#mar-probe-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 14px; background: rgba(255, 255, 255, 0.06); border-bottom: 1px solid rgba(255, 255, 255, 0.12); color: #f2f2f7; font-size: 13px; font-weight: 600; }
+#mar-probe-actions { display: flex; gap: 8px; }
+#mar-probe-actions .mar-btn { padding: 5px 12px; font-size: 12px; width: auto; color: #f2f2f7; background: rgba(255, 255, 255, 0.12); border: 1px solid rgba(255, 255, 255, 0.2); }
+#mar-probe-actions .mar-btn::before { display: none; }
+#mar-probe-actions .mar-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.22); }
+#mar-probe-text { flex: 1; width: 100%; resize: none; border: 0; outline: none; padding: 12px 14px; margin: 0; background: transparent; color: #d7d7dc; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre; overflow: auto; user-select: text; }`;
         document.head.appendChild(style);
     }
-
-    // ===================== 悬浮窗 UI =====================
-    // 选项卡名 → 视图。切选项卡只是换 .mar-pane 的显示，不动任何任务状态，
-    // 所以任务跑着的时候切走再切回来不会打断它。
     function switchTab(name) {
-        // 名字不存在就直接不动。真要是切到一个拼错的视图名，所有 pane 都不带
-        // .mar-active，面板会变成一片空白且看不出原因——不如保持原样。
         if (!document.querySelector('#mooc-auto-review-panel .mar-pane[data-pane="' + name + '"]')) return;
         var tabs = document.querySelectorAll('#mooc-auto-review-panel .mar-tab');
         for (var i = 0; i < tabs.length; i++) {
@@ -672,95 +434,6 @@
         }
         return false;
     }
-
-    // 从地址栏解析当前内容 ID：
-    //   新版路径路由：/mooc/learn/{课程}/content/{内容ID}?tid=...（Hash 为空）
-    //   旧版 hash 路由：#/learn/content?type=detail&id=123
-    function learnCurrentContentId() {
-        var m = location.pathname.match(/\/content\/(\d+)/);
-        if (m) return parseInt(m[1], 10);
-        m = location.hash.match(/id=(\d+)/);
-        return m ? parseInt(m[1], 10) : null;
-    }
-
-    // 当前课程路径前缀，例如 /mooc/learn/HPU-1474216172
-    // 用来过滤页面里其他课程/广告链接，保证只收集本课程的内容链接
-    function learnCoursePrefix() {
-        var m = location.pathname.match(/^(\/mooc\/learn\/[^/]+)/);
-        return m ? m[1] : null;
-    }
-
-    // 收集章节目录里的内容链接（含 data-id 的节点），按页面顺序返回 [{id, el, href}]
-    // 优先严格模式：只收能归属到某个“章”的链接（chapterTitleOfLink 非空），
-    // 避免页面上的课程卡片/广告链接污染本章内容列表。
-    // 若严格模式一个都收不到（新版侧栏可能没有可解析的章标题节点），
-    // 退回宽松模式：收本课程路径下所有 /content/ 链接。
-    function learnContentLinks() {
-        var strict = collectCatalogLinks(true);
-        if (strict.length > 0) return strict;
-        var loose = collectCatalogLinks(false);
-        return loose;
-    }
-
-    function collectCatalogLinks(requireChapter) {
-        var out = [], seen = {};
-        var coursePrefix = learnCoursePrefix();
-        var sels = [
-            '[class*="catalog"] a, [class*="chapter"] a, [class*="menu"] a, [class*="lesson"] a, [class*="section"] a, [class*="unit"] a, [class*="node"] a, [class*="learnItem"] a, [class*="learn-item"] a',
-            '[class*="catalog"] [data-id], [class*="chapter"] [data-id], [class*="menu"] [data-id], [class*="lesson"] [data-id], [class*="section"] [data-id], [class*="node"] [data-id]',
-            '[class*="catalog"] [data-content-id], [class*="chapter"] [data-content-id], [class*="lesson"] [data-content-id]',
-            // 新版 UI（mooc- 前缀侧栏）
-            '[class*="mooc-catalog"] a, [class*="mooc-lesson"] a, [class*="mooc-chapter"] a, [class*="mooc-sidebar"] a, [class*="mooc-menu"] a, [class*="mooc-nav"] a',
-            '[class*="mooc-catalog"] [data-content-id], [class*="mooc-lesson"] [data-content-id]',
-            // 新版 UI（learn- 前缀侧栏，如 learn-navigation-link）
-            '[class*="learn-navigation"] a, [class*="learn-nav"] a, [class*="learn-catalog"] a, [class*="learn-lesson"] a, [class*="learn-chapter"] a, [class*="learn-section"] a, [class*="learn-unit"] a, [class*="learn-list"] a, [class*="learn-menu"] a',
-            '[class*="learn-navigation"] [data-content-id], [class*="learn-list"] [data-content-id], [class*="learn-lesson"] [data-content-id]',
-            // 旧版 hash 路由
-            'a[href*="#/learn/content"]',
-            'a[href*="#/learn/forum"]',
-        ];
-        if (!requireChapter) {
-            // 宽松模式：本课程路径下所有指向 /content/ 的链接，以及 learn-navigation 锚点
-            sels.push('a[href*="/content/"]');
-            sels.push('a[class*="learn-navigation"], a[class*="learn-nav"], a[href*="/mooc/learn/"]');
-        }
-        for (var s = 0; s < sels.length; s++) {
-            var els;
-            try { els = document.querySelectorAll(sels[s]); } catch (e) { continue; }
-            for (var i = 0; i < els.length; i++) {
-                var srcEl = els[i];
-                var a = (srcEl.tagName === 'A') ? srcEl : srcEl.querySelector('a[href*="id="], a[href*="/content/"]');
-                // 跳过“上一个/下一个/返回”这类导航按钮
-                if (a && /上一个|下一个|上一节|下一节|上一讲|下一讲|上一章|下一章|返回|首页/.test(cleanText((a.textContent || '').slice(0, 6)))) continue;
-                if (a && coursePrefix) {
-                    var ah = a.getAttribute('href') || '';
-                    // 宽松模式下只收本课程的链接；目录容器里的链接不强制（容器本身已限定范围）
-                    if (!requireChapter && ah.indexOf(coursePrefix) !== 0 && ah.indexOf('#') !== 0) continue;
-                }
-                var id = linkIdOf(a || srcEl);
-                if (id === null || seen[id]) continue;
-                // 严格模式必须能归属到章；宽松模式不要求
-                if (requireChapter && !chapterTitleOfLink(a || srcEl)) continue;
-                seen[id] = true;
-                out.push({ id: id, el: a || srcEl, href: a ? (a.getAttribute('href') || '') : '' });
-            }
-        }
-        return out;
-    }
-
-    // 从链接（或带 data 属性的节点）里解析内容 ID，兼容新旧两种 URL 形态
-    function linkIdOf(node) {
-        if (!node) return null;
-        var href = (node.getAttribute && node.getAttribute('href')) || '';
-        var m = href.match(/\/content\/(\d+)/) || href.match(/id=(\d+)/);
-        if (m) return parseInt(m[1], 10);
-        var di = (node.getAttribute && (node.getAttribute('data-content-id') || node.getAttribute('data-id'))) || '';
-        if (di && /^\d+$/.test(di)) return parseInt(di, 10);
-        return null;
-    }
-
-    // 形如「1 总论」「第1章 xxx」「第一章」「第一单元」的才是章标题。
-    // 注意排除节标题（1-1 xxx）和测验条目（单元测验/随堂测验）。
     function looksLikeChapterHeading(t) {
         if (!t || t.length < 2 || t.length > 30) return false;
         if (/章|讲|篇|专题|Module|Chapter|Part/i.test(t)) return true;
@@ -769,8 +442,6 @@
         if (/^\d{1,2}\s*[^\d.、．\-－]/.test(t)) return true; // “1 总论”“2 会计科目”
         return false;
     }
-
-    // 某个内容链接所属“章”的标题（从它的祖先链上找章标题节点）
     function chapterTitleOfLink(link) {
         var node = link && link.parentElement;
         var depth = 0;
@@ -789,49 +460,10 @@
         }
         return null;
     }
-
-    // 当前页面的章节标题（标题栏/面包屑 → 目录兜底）
-    function learnChapterTitleText() {
-        var cands = [
-            '.titleBar', '[class*="titleBar"]', '[class*="crumb"]', '[class*="breadcrumb"]',
-            '[class*="chapterTitle"]', '[class*="chapter-title"]', '[class*="learnTitle"]',
-            '[class*="content-title"]', '.m-crumb',
-            // 新版 UI（learn- 前缀）
-            '[class*="learn-title"]', '[class*="learn-chapter"]', '[class*="learn-catalog"]',
-            '[class*="learn-lesson-title"]', '[class*="learn-header-title"]', '[class*="learn-unit"]',
-            '[class*="learn-section-title"]', '[class*="learn-content-title"]',
-        ];
-        for (var c = 0; c < cands.length; c++) {
-            var els;
-            try { els = document.querySelectorAll(cands[c]); } catch (e) { continue; }
-            for (var i = 0; i < els.length; i++) {
-                var t = cleanText(els[i].textContent);
-                if (!t || t.length > 80) continue;
-                var segs = t.split(/[>›»·|—–/]/);
-                for (var k = 0; k < segs.length; k++) {
-                    var seg = cleanText(segs[k]);
-                    if (looksLikeChapterHeading(seg)) return seg;
-                }
-                // 宽松兜底：取第一段
-                var first = cleanText(segs[0]);
-                if (first && first.length >= 2 && first.length <= 30 && !/^\d+$/.test(first)) return first;
-            }
-        }
-        var heads = document.querySelectorAll('[class*="catalog"] h3, [class*="catalog"] h4, [class*="chapter"] h3, [class*="chapter"] h4, [class*="catalog"] [class*="chapter"], [class*="catalog"] [class*="catalog-title"], [class*="catalog"] [class*="catalogTitle"], [class*="learn-navigation"] h3, [class*="learn-navigation"] h4, [class*="learn-list"] [class*="title"], [class*="learn-nav"] [class*="title"]');
-        for (i = 0; i < heads.length; i++) {
-            var t2 = cleanText(heads[i].textContent);
-            if (looksLikeChapterHeading(t2)) return t2;
-        }
-        return null;
-    }
-
-    // 可见的 video 元素
     function findVideo() {
         var v = document.querySelector('video');
         return v && isVisible(v) ? v : null;
     }
-
-    // 播放器上的“播放/开始”按钮（autoplay 被拦时兜底用真实点击）
     function findPlayButtons() {
         var out = [], els = document.querySelectorAll('button, a, [role="button"], span, div');
         for (var i = 0; i < els.length; i++) {
@@ -852,18 +484,14 @@
         var p = null;
         try { p = video.play(); } catch (e) { p = null; }
         if (p && p.catch) p.catch(function () {});
-        // 等 play() 生效：视频仍在暂停就继续等一小段
         var t0 = Date.now();
         while (Date.now() - t0 < 2500 && video.paused) { await sleep(200); }
         if (!video.paused) return;
-        // autoplay 被拦时兜底：真实点击播放器上的播放/开始按钮
         var btns = findPlayButtons();
         var clicked = false;
         for (var i = 0; i < btns.length; i++) { realClick(btns[i]); clicked = true; }
         if (clicked) await sleep(700);
     }
-
-    // —— 视频倍速（设置页可调，0.5x ~ 3x，落盘 localStorage）——
     function loadVideoRate() {
         try {
             var r = parseFloat(localStorage.getItem('mar.video.rate'));
@@ -874,14 +502,10 @@
     function saveVideoRate(r) {
         try { localStorage.setItem('mar.video.rate', String(r)); } catch (e) {}
     }
-    // 把倍速应用到视频上（部分播放器切清晰度/拖动进度后会重置倍速，需要持续应用）
     function applyVideoRate(video) {
         var r = loadVideoRate();
         try { if (video && Math.abs(video.playbackRate - r) > 0.01) video.playbackRate = r; } catch (e) {}
     }
-
-    // 视频中弹出的题目浮层。只在有视频时探测；强特征（题干文字）出现时
-    // 即使视频还在播也认，避免漏掉“先弹题后暂停”的情况。
     function findQuizPopup() {
         var video = findVideo();
         if (!video) return null;
@@ -915,8 +539,6 @@
         }
         return null;
     }
-
-    // 只在视频题目浮层内点击精确匹配的“继续学习”，不匹配课程导航。
     var lastQuizContinueAt = 0;
     function clickQuizContinue(popup) {
         if (taskState.cancelled || manualWaitFlag || !findVideo()) return false;
@@ -946,8 +568,6 @@
         }
         return false;
     }
-
-    // 作答弹题：选第一个选项 → 点提交/继续。对错不保证。
     async function answerQuizPopup(popup) {
         if (clickQuizContinue(popup)) return true;
         var i, clickedOpt = false;
@@ -999,7 +619,6 @@
     }
 
     function readVideoUnitCompletion(context) {
-        // 只检查当前视频内容标签，不把课时、章节、导航或别的视频的完成状态算进来。
         if (location.href !== context.url) return 'changed';
         var tab = currentContentTab();
         if (!tab) return 'unknown';
@@ -1043,15 +662,11 @@
         updateStatus('⚠️ 完成状态未确认，已记录日志并继续下一项，请稍后核对');
         return true;
     }
-
-
-    // 视频内容：从头播放 → 处理弹题 → 看完返回 true
     async function learnVideoItem() {
         var video = await waitForVideo();
         if (!video) { logDebug('video', '⚠️ 未检测到播放器，按其它内容处理'); updateStatus('⚠️ 未检测到播放器，按其它内容处理'); return true; }
         var completionContext = videoUnitContext();
         video.__marEndedFlag = false; // 连续视频复用播放器时，清除上一视频的结束标记
-        // 监听 ended 事件：视频一播完立刻触发跳转（比轮询更快更可靠）
         if (!video.__marEndedHook) {
             video.__marEndedHook = true;
             video.addEventListener('ended', function () {
@@ -1069,19 +684,13 @@
         while (!taskState.cancelled) {
             video = findVideo() || video;
             applyVideoRate(video); // 持续应用倍速（切清晰度/拖动进度后平台可能重置）
-
-            // 0) 用户点了【下一节】→ 跳过当前视频
             if (manualWaitFlag) { logDebug('video', '用户点击【下一节】，跳过当前视频'); updateStatus('⏭ 用户点击【下一节】，跳过当前视频'); return true; }
-
-            // 已提交的答题结果也单独检查，避免错误结果页不再被题目检测器识别。
             if (clickQuizContinue(findQuizPopup())) {
                 await sleep(400);
                 var continuedVideo = findVideo();
                 if (continuedVideo && continuedVideo.paused && !findQuizPopup()) await playVideo(continuedVideo);
                 continue;
             }
-
-            // 1) 视频中弹出题目 → 作答
             var popup = findQuizPopup();
             if (popup && Date.now() - lastAnswerAt > 2500) {
                 lastAnswerAt = Date.now();
@@ -1106,14 +715,10 @@
                 }
                 continue;
             }
-
-            // 2) 真正结束后，等待当前视频单项完成标记；不会提前结束播放。
             if (video.ended || (video.__marEndedFlag && Number.isFinite(video.duration) && video.duration > 0 && video.currentTime >= video.duration - 0.05)) {
                 logDebug('video', '🎬 播放完毕（currentTime=' + (video.currentTime || 0).toFixed(1) + '/duration=' + (video.duration || 0).toFixed(1) + '）');
                 return await waitVideoCompletion(completionContext);
             }
-
-            // 3) 意外暂停（非弹题、非手动等待）→ 尝试恢复
             if (video.paused && !manualResume && Date.now() - lastAnswerAt > 2500 && Date.now() - lastRetry > 2500) {
                 lastRetry = Date.now();
                 await playVideo(video);
@@ -1122,8 +727,6 @@
         }
         return false;
     }
-
-    // 文档查看器（新版课件/PDF/PPT；含新版 mooc-docs-reader 阅读器）
     function findDocViewer() {
         var sels = [
             '[class*="mooc-docs-reader"]', '[class*="docs-reader"]', '[class*="mooc-doc"]',
@@ -1145,7 +748,6 @@
                 return el;
             }
         }
-        // 兜底：主内容区里一张可见的大图（文档页常为整页图片）
         var imgs = document.querySelectorAll('img');
         for (i = 0; i < imgs.length; i++) {
             var im = imgs[i];
@@ -1156,11 +758,8 @@
         }
         return null;
     }
-
-    // 文档的“下一页”按钮（含新版阅读器：点当前激活页缩略图的后一张）
     function findDocNextBtn() {
         var scope = findDocViewer() || document;
-        // 新版 mooc-docs-reader：缩略图按钮 1..N，is-active 是当前页
         var thumbs = scope.querySelectorAll('.mooc-docs-reader__thumbnail, [class*="mooc-docs-reader__thumbnail"]');
         if (thumbs.length > 0) {
             for (var t = 0; t < thumbs.length - 1; t++) {
@@ -1184,8 +783,6 @@
         }
         return null;
     }
-
-    // 当前页的页码信息（“3/12”或新版缩略图 is-active 序号）
     function docPageInfo() {
         var thumbs = document.querySelectorAll('.mooc-docs-reader__thumbnail, [class*="mooc-docs-reader__thumbnail"]');
         if (thumbs.length > 0) {
@@ -1205,8 +802,6 @@
         }
         return null;
     }
-
-    // 当前可见文档页的“指纹”（缩略图激活位 / 主图 src / 内容摘要），用于判断翻页是否生效
     function docPageSignature() {
         var scope = findDocViewer();
         if (!scope) return '';
@@ -1226,8 +821,6 @@
         var txt = scope.textContent || '';
         return String(txt.length) + ':' + txt.slice(-60);
     }
-
-    // 没有翻页按钮的长文档：每 1 秒滚动一屏，滚不动即到底
     async function scrollDocFallback() {
         var viewer = findDocViewer();
         var sc = (viewer && viewer.scrollHeight > viewer.clientHeight + 40) ? viewer : (document.scrollingElement || document.documentElement);
@@ -1236,18 +829,14 @@
         await sleep(CONFIG.LEARN_DOC_PAGE_MS);
         return sc.scrollTop > before + 10;
     }
-
-    // 文档内容：自动翻页，每页停留 1 秒
     async function learnDocItem() {
         logDebug('doc', '开始自动翻页（每页 1 秒）...');
         updateStatus('📄 检测到文档，开始自动翻页（每页 1 秒）...');
         var flips = 0, stale = 0, lastSig = docPageSignature(), lastInfo = docPageInfo();
         while (!taskState.cancelled && flips < CONFIG.LEARN_MAX_PAGE_FLIPS) {
-            // 用户点了【下一节】→ 跳过当前文档
             if (manualWaitFlag) { logDebug('doc', '用户点击【下一节】，跳过当前文档'); updateStatus('⏭ 用户点击【下一节】，跳过当前文档'); return true; }
             var btn = findDocNextBtn();
             if (!btn) {
-                // 新版缩略图阅读器：没有下一页按钮就说明已在最后一页，直接完成
                 var info = docPageInfo();
                 if (info && info.total > 0) {
                     logDebug('doc', '翻页结束（已到最后一页 ' + info.cur + '/' + info.total + '）');
@@ -1275,126 +864,12 @@
         updateStatus('📄 文档处理完成，进入下一个内容');
         return true;
     }
-
-    // 独立测验：只停留片刻（不自动作答，避免消耗答题次数）
-
-
-    // 其它（富文本课件等）：停留片刻
-
-    // 在页面里找目标 ID 对应的目录链接（SPA 真实点击不会整页刷新）
-    function findContentElById(id) {
-        var links = learnContentLinks();
-        for (var i = 0; i < links.length; i++) {
-            if (links[i].id === id && links[i].el) return links[i].el;
-        }
-        return null;
-    }
-
-    // 宽松版：全页面找目标 ID 对应的链接（不要求归属到章），用于跳转兜底。
-    // 安全约束：<a> 的 href 必须真的指向目标 ID（/content/{id} 或 id={id}），
-    //           否则跳过——避免点到课程首页/公告这类杂项链接。
-    function findAnyContentElById(id) {
-        var els = document.querySelectorAll('a[href*="/content/"], a[href*="id="], [data-content-id], [data-id]');
-        var coursePrefix = learnCoursePrefix();
-        for (var i = 0; i < els.length; i++) {
-            if (linkIdOf(els[i]) !== id) continue;
-            if (els[i].tagName === 'A') {
-                var ah = els[i].getAttribute('href') || '';
-                if (!(new RegExp('/content/' + id + '(?![0-9])').test(ah) || ah.indexOf('id=' + id) !== -1)) continue;
-                if (coursePrefix && ah.indexOf('#') !== 0 && ah.indexOf(coursePrefix) !== 0) continue;
-            }
-            return els[i];
-        }
-        return null;
-    }
-
-    // 构造新版路径路由的跳转地址：只替换 content/{id}，保留 tid，
-    // 但清掉 unitId/chapterId——它们必须与新内容匹配，拿不到正确值宁可交给平台自己解析，
-    // 也不能带旧的（否则平台报“unitId 与 lessonId 不匹配”课件不存在）。
-    function buildContentUrl(id) {
-        try {
-            var u = new URL(location.href);
-            u.pathname = u.pathname.replace(/\/content\/\d+/, '/content/' + id);
-            var sp = new URLSearchParams(u.search);
-            var tid = sp.get('tid');
-            sp.delete('unitId'); sp.delete('chapterId'); sp.delete('sm');
-            if (tid) sp.set('tid', tid);
-            u.search = sp.toString();
-            return u.href;
-        } catch (e) {
-            return location.href.replace(/\/content\/\d+/, '/content/' + id);
-        }
-    }
-
-    // 跳转到指定内容。target 可以是 {id, href, el}，也可以是数字 id。
-    // 新版路径路由（/content/{id}?tid=...&unitId=...&chapterId=...）与旧版 hash 路由都支持。
-    // 顺序：① 真实点击目录里的链接（SPA 内部路由，不刷新、参数全对）；
-    //       ② 用目录链接的完整 href 跳转（含正确 unitId/chapterId）；
-    //       ③ 都没有时按当前 URL 换 content id（并清掉可能不匹配的 unitId/chapterId）。
-    // 安全约束：点击/使用某个链接前，必须确认它的 href 真的指向目标 ID，
-    //           否则宁可自己构造 URL，也不点杂项链接（避免跳到 content/3 这种假地址）。
-    async function gotoContent(target) {
-        var id = (typeof target === 'object' && target) ? target.id : target;
-        var href = (typeof target === 'object' && target) ? (target.href || '') : '';
-        var el = (typeof target === 'object' && target && target.el) || findContentElById(id) || findAnyContentElById(id);
-        if (el) {
-            var elHref = (el.getAttribute && el.getAttribute('href')) || '';
-            // 只采纳「href 里明确含目标 ID」的完整链接；其余一律当没有
-            if (elHref && elHref.indexOf('#') !== 0 &&
-                (new RegExp('/content/' + id + '(?![0-9])').test(elHref) || elHref.indexOf('id=' + id) !== -1)) {
-                href = elHref;
-            } else {
-                el = null; // href 与目标 ID 对不上：不点击、不使用
-            }
-        }
-
-        if (el && el.tagName === 'A' && isVisible(el)) {
-            try { realClick(el); } catch (e) {}
-            await sleep(600);
-            if (learnCurrentContentId() === id) { await sleep(400); return; }
-            // 没生效，继续走 URL 跳转兜底
-        }
-
-        var curHref = location.href, curHash = location.hash;
-        var next = null;
-        if (href) {
-            if (href.indexOf('#') !== -1) {
-                var hashPart = href.slice(href.indexOf('#'));
-                if (/id=(\d+)/.test(hashPart)) next = hashPart; // 旧版：沿用目录链接的 hash
-            } else if (/\/content\/\d+/.test(href) || /\/mooc\/learn\//.test(href)) {
-                next = href; // 新版：完整链接（含 tid/unitId/chapterId，参数正确）
-            }
-        }
-        if (!next) {
-            if (/\/content\/\d+/.test(curHref)) {
-                next = buildContentUrl(id); // 保留 tid，清掉可能不匹配的 unitId/chapterId
-            } else if (/id=\d+/.test(curHash)) {
-                next = curHash.replace(/id=\d+/, 'id=' + id); // 旧版 hash 路由
-            }
-        }
-        if (next) {
-            if (next.indexOf('#') === 0) { if (next !== curHash) location.hash = next; }
-            else { if (next !== curHref) location.href = next; }
-        }
-        var t0 = Date.now();
-        while (Date.now() - t0 < CONFIG.LEARN_NAV_WAIT) {
-            if (taskState.cancelled) throw makeCancelError();
-            if (learnCurrentContentId() === id) { await sleep(500); return; }
-            await sleep(250);
-        }
-    }
-
-    // 判定“当前是不是讨论页”要偏严：自动学习里若误判，会把回复文本填进搜索框。
-    // 要求有 hash 特征，或命中了回复列表容器，或编辑器周围带明显的回复/评论字样。
     function looksLikeDiscussionPage() {
         if (/forum|discuss|discussion|topic/i.test(location.pathname + location.hash)) return true;
         return !!document.querySelector('[class*="mooc-comment"], .m-data-lists, [class*="discussion-content"]');
     }
-
-    // 当前页面类型：quiz / discussion / video / doc / other
     function detectContentType() {
         var href = location.href, hash = location.hash;
-        // 课件加载失败页（unitId 与 lessonId 不匹配等）→ 快速跳过，不停留
         var bodyHead = cleanText((document.body ? document.body.textContent : '') || '').slice(0, 300);
         if (/课件不存在|课件加载失败|unitId[\s\S]{0,20}不匹配|lessonId[\s\S]{0,20}不匹配|内容不存在|资源不存在/.test(bodyHead)) { logDebug('type', 'missing：页面显示课件不存在/unitId不匹配类文案'); return 'missing'; }
         if (findVideo()) { logDebug('type', 'video：检测到播放器'); return 'video'; }
@@ -1404,11 +879,6 @@
         logDebug('type', 'other：未命中视频/文档/讨论/测验特征（富文本/节标题页等）');
         return 'other';
     }
-
-    // ---- 自动学习的跨页面续跑状态 ----
-    // 新版 UI 是路径路由：跳转内容 = 整页刷新，页面刷新后脚本重新初始化，
-    // 内存里的循环会断掉。所以把「计划」写进 localStorage，每次刷新后由
-    // resumeLearn() 接着跑；点“停止”或手动切走则清除状态。
     var LEARN_STATE_KEY = 'mooc.merged.learn.state.v1'; // v2：清掉旧版残留的脏计划
 
     function learnSaveState(st) {
@@ -1425,16 +895,6 @@
     function learnClearState() {
         try { localStorage.removeItem(LEARN_STATE_KEY); } catch (e) {}
     }
-
-    // ===================== 新版 DOM 导航核心（tablist + 章节/小节下拉） =====================
-    // 页面结构（用户提供）：
-    //   · 顶部导航：章节/小节下拉按钮 <button aria-expanded="false" aria-label="章节名/小节名" type="button">
-    //   · 内容标签栏：<div role="tablist"> 内多个 <button role="tab" aria-label="内容名" type="button">，
-    //     当前激活的带 aria-selected="true"
-    //   · SPA 单页应用：跳转一律用 .click() 模拟点击，绝不直接改 URL
-    // 跳转优先级：①同小节（tab 下一个兄弟）→ ②跨小节（小节下拉下一项）→ ③跨章节（章节下拉下一章）
-
-    // 通用：等待元素出现（Promise），超时返回 null；中途取消也返回 null
     function waitForElement(selector, timeout, root) {
         return new Promise(function (resolve) {
             var t0 = Date.now();
@@ -1448,8 +908,6 @@
             })();
         });
     }
-
-    // 等待某个内容标签成为激活项（aria-selected=true）
     async function waitForTabActive(tab) {
         var t0 = Date.now();
         while (Date.now() - t0 < CONFIG.LEARN_NAV_WAIT) {
@@ -1459,15 +917,11 @@
         }
         return !!(tab && tab.getAttribute('aria-selected') === 'true');
     }
-
-    // 当前激活的内容标签（[role="tab"][aria-selected="true"] 中可见的那个）
     function currentContentTab() {
         var tabs = document.querySelectorAll('[role="tab"][aria-selected="true"]');
         for (var i = 0; i < tabs.length; i++) if (isVisible(tabs[i])) return tabs[i];
         return null;
     }
-
-    // 收集全部可见的内容标签
     function contentTabs() {
         var out = [];
         var lists = document.querySelectorAll('[role="tablist"]');
@@ -1477,14 +931,6 @@
         }
         return out;
     }
-
-    // 顶部导航里的章节/小节下拉按钮。
-    // 真实页面（用户提供）：
-    //   · 章节按钮 aria-label="第四章 坚持以人民为中心"（匹配章标题）
-    //   · 小节按钮 aria-label="4.2.2 依靠人民创造历史伟业"（数字编号 + 名字）
-    //   · 干扰按钮：两个无 label 的 learn-header-action、「更多课程操作」learn-header-more-toggle、
-    //     「打开文科AI助教」learn-agent-launcher —— 必须排除，否则小节按钮会被「更多课程操作」抢走，
-    //     导致跨小节时展开错误的下拉 → 匹配失败 → 误判“小节已结束” → 误跳章节。
     function headerDropdowns() {
         var btns = document.querySelectorAll('header button[aria-expanded], [class*="header"] button[aria-expanded], nav button[aria-expanded], button[aria-expanded]');
         var chapter = null, section = null;
@@ -1493,7 +939,6 @@
             var label = btns[i].getAttribute('aria-label') || '';
             if (!label) continue;
             var cls = typeof btns[i].className === 'string' ? btns[i].className : (btns[i].getAttribute ? (btns[i].getAttribute('class') || '') : '');
-            // 黑名单：排除平台的功能按钮（更多课程操作 / 文科AI助教 / 无意义的 header-action）
             if (/learn-header-action|learn-header-more|learn-agent|more-toggle|more-menu/.test(cls)) continue;
             if (/更多课程操作|打开.*助教|更多|收起|关闭/.test(label)) continue;
             if (looksLikeChapterHeading(label)) { if (!chapter) chapter = btns[i]; }
@@ -1503,8 +948,6 @@
             + ' | 小节按钮=' + (section ? (section.getAttribute('aria-label') || '?') : '未找到'));
         return { chapter: chapter, section: section };
     }
-
-    // 下拉菜单里“可点项”的候选选择器（下拉展开后的 DOM 未知，多给几组候选）
     function menuItemSels() {
         return [
             '[role="menuitem"]', '[role="option"]', '[class*="menuitem"]', '[class*="menu-item"]',
@@ -1514,18 +957,12 @@
             'a', 'li', 'button',
         ];
     }
-
-    // 展开下拉按钮，返回展开后的面板容器（找不到返回 null）。
-    // 健壮策略：点击前记录候选面板 → 点击 → 优先找「新出现」的面板；
-    // 若下拉本就处于展开态（无新面板），则返回按钮祖先里任意可见面板，
-    // 保证「已展开状态下重新取菜单」也能命中。
     async function expandDropdown(btn) {
         if (!btn) return null;
         var before = collectCandidates(document, ['[role="menu"]', '[role="listbox"]', '[class*="dropdown"]', '[class*="popover"]', '[class*="popup"]', '[class*="select-list"]'], 40);
         if (btn.getAttribute('aria-expanded') !== 'true') { realClick(btn); }
         await sleep(400);
         var fallbackPanel = null;
-        // 1) 从按钮向上找父容器里的面板（优先新出现，其次任意可见）
         var node = btn;
         for (var depth = 0; node && depth < 5; depth++) {
             var parent = node.parentElement;
@@ -1541,7 +978,6 @@
             }
             node = parent;
         }
-        // 2) 全页面：优先新出现的面板，其次任意可见面板
         var els = document.querySelectorAll('[role="menu"], [role="listbox"], [class*="dropdown-menu"], [class*="dropdown"], [class*="popover"], [class*="popup"]');
         var anyPanel = null;
         for (var i = 0; i < els.length; i++) {
@@ -1552,18 +988,12 @@
         }
         return anyPanel || fallbackPanel || null;
     }
-
-    // 判断元素是不是「可点击单元」：a / button / li / option / menuitem / tab
     function isClickableEl(el) {
         var tag = el.tagName;
         if (tag === 'A' || tag === 'BUTTON' || tag === 'LI') return true;
         var role = el.getAttribute ? (el.getAttribute('role') || '') : '';
         return role === 'option' || role === 'menuitem' || role === 'tab' || role === 'button';
     }
-
-    // 取菜单项的完整文本：如果元素是内部碎片（span 等），提升到它的可点父级（a/li/button）再取文本。
-    // 关键：真实菜单项常是 <li><a><span>4.1.3</span><span>人民立场…</span></a></li>，
-    // 若只读 span 会得到不完整文本，导致与按钮 aria-label 匹配失败 → 误判“没下一项” → 误跳章节。
     function itemFullText(el) {
         var node = el;
         if (el.closest) {
@@ -1572,9 +1002,6 @@
         }
         return cleanText(node.textContent).slice(0, 40);
     }
-
-    // 从候选里保留「最外层的可点单元」：有可点祖先在集合里的碎片（span/div）一律丢弃；
-    // 若某项没有可点祖先（纯 div/span 菜单），则原样保留。
     function dedupeClickable(raw) {
         var out = [];
         for (var i = 0; i < raw.length; i++) {
@@ -1587,8 +1014,6 @@
         }
         return out;
     }
-
-    // 从候选里保留「最外层的可点单元」，并按 DOM 顺序排序。
     function menuItemsOf(panel) {
         var raw = collectCandidates(panel, menuItemSels(), 160);
         var out = dedupeClickable(raw);
@@ -1600,12 +1025,6 @@
         });
         return out;
     }
-
-    // 展开下拉后返回菜单项列表。
-    // 优先用面板内的候选；面板找不到时，用「点击前后新出现的可点项」兜底
-    // （展开前记录候选 → 展开后 diff，新出现的项基本就是菜单项）。
-    // 菜单内容多时可以滚动（用户反馈）：若面板内没取到项，先把面板滚到底/中间，
-    // 触发懒渲染/虚拟列表补全后再收一次。
     async function findDropdownItems(btn) {
         var before = collectCandidates(document, menuItemSels(), 160);
         var panel = await expandDropdown(btn);
@@ -1629,9 +1048,6 @@
             + ' | 面板=' + (panel ? (panel.className ? String(panel.className).slice(0, 40) : panel.tagName) : 'null'));
         return out;
     }
-
-    // 点击下拉菜单选项：先提升到可点父级（span → a/li/button，点击才有效），
-    // 再滚入面板可视区（长菜单/虚拟列表可能未渲染），最后模拟点击。
     function clickMenuItem(el) {
         var target = el;
         if (el.closest) {
@@ -1641,30 +1057,12 @@
         try { if (target.scrollIntoView) target.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
         realClick(target);
     }
-
-    // 分组标题识别：小节下拉里「第一节 xxx / 第二节 xxx」这类是节的分组标题，
-    // 不是可点进入的内容单元（真实内容单元形如 4.1.1 / 4.2.2）。
-    // 匹配/取下一个时必须跳过它们，否则当前节最后一个内容学完时，
-    // 「下一个」会拿到分组标题而不是下一节的具体内容。
-    // 注意：只认「第X节」，不能误伤章节名（第四章/第五章等 —— 章节下拉菜单里全是章名）。
     function isGroupTitle(t) {
         return /^第[一二三四五六七八九十百\d]+\s*节/.test(t) && !/^\s*\d+(\.\d+)+/.test(t);
     }
-
-    // 匹配用归一化文本：去掉所有空白再比较。
-    // 关键：菜单项常是 <a><span>4.1.3</span><span>人民立场…</span></a>，
-    // textContent 是「4.1.3人民立场…」（无空格），而按钮 aria-label 是「4.1.3 人民立场…」（有空格），
-    // 不去空白会匹配失败 → 误判“没下一项” → 误跳章节。
     function normMatch(s) {
         return String(s === null || s === undefined ? '' : s).replace(/\s+/g, '');
     }
-
-    // 在菜单项里找「文本与 currentLabel 相似」的项，返回它的下一个；没有下一个返回 null。
-    // 文本相似 = 相等 / 互相包含（归一化空白后比较，精确匹配优先，包含关系兜底）。
-    // 文本一律用 itemFullText 取（提升到可点父级），避免 span 碎片导致匹配失败。
-    // 注意：分组标题（第一节/第二节）也参与匹配和取下一个 —— 有些课程里节标题本身可点
-    // （点它进入该节），直接跳过会让用户觉得“第一节/第二节被跳过”。不可点时由
-    // doSectionJump 的兜底逻辑改点该节第一个内容单元。
     function nextOfMenuItems(items, currentLabel) {
         if (!items || items.length === 0) return null;
         var target = normMatch(currentLabel);
@@ -1681,17 +1079,11 @@
             + (ret ? '，下一个=「' + itemFullText(ret).slice(0, 24) + '」' : '，无下一个（当前是最后一项）'));
         return ret;
     }
-
-    // —— 跳转三级逻辑 ——
-
-    // 判断内容标签是不是「测验」（按 aria-label / 文本关键词，命中即视为测验）
     function tabIsQuiz(tab) {
         var label = (tab.getAttribute && (tab.getAttribute('aria-label') || '')) || '';
         var txt = cleanText((tab.textContent || '')).slice(0, 30);
         return /测验|测试|考试|自测|小测|quiz/i.test(label) || /测验|测试|考试|自测|小测|quiz/i.test(txt);
     }
-
-    // 从当前标签向后找「下一个非测验」的内容标签（跳过测验，满足“测验连进入都不要进入”）
     function nextTabSkipQuiz(fromTab) {
         var s = fromTab, skipped = [];
         while (s) {
@@ -1705,19 +1097,12 @@
         }
         return null;
     }
-
-    // 标签列表里第一个非测验的（跨小节/章节后自动点它）
     function firstNonQuizTab(tabs) {
         for (var i = 0; i < tabs.length; i++) {
             if (!tabIsQuiz(tabs[i])) return tabs[i];
         }
         return null;
     }
-
-    // 等待内容标签栏完成切换：出现「不是旧激活元素」的新 tab 才算切换成功。
-    // 关键：SPA 框架（React/Vue）会复用 tablist 容器、替换内部 tab 元素，
-    // 所以必须用「元素身份变化」判断（旧元素被新元素替换），不能用 waitForElement
-    // 命中容器里已存在的旧元素——否则会点到上一节的内容。
     async function waitForTablistRefresh(oldTab) {
         var t0 = Date.now();
         while (Date.now() - t0 < 10000) {
@@ -1738,9 +1123,6 @@
         logDebug('nav', '⚠️ tablist 刷新超时（10 秒内旧元素未被替换）');
         return null;
     }
-
-    // 展开「小节」下拉，返回「下一个小节」选项；当前小节是最后一项（无下一项）返回 null。
-    // 无下一项时顺手收起下拉，避免残留影响后续章节跳转。
     async function pickNextSectionItem() {
         var dd = headerDropdowns();
         if (!dd.section) { logDebug('nav', '⚠️ 未找到「小节」下拉按钮'); return null; }
@@ -1756,8 +1138,6 @@
         logDebug('nav', '跨小节目标=「' + itemFullText(next).slice(0, 24) + '」');
         return next;
     }
-
-    // 展开「章节」下拉，返回「下一个章节」选项；无下一项（全部章节学完）返回 null。
     async function pickNextChapterItem() {
         var dd = headerDropdowns();
         if (!dd.chapter) { logDebug('nav', '⚠️ 未找到「章节」下拉按钮'); return null; }
@@ -1773,17 +1153,12 @@
         logDebug('nav', '跨章节目标=「' + itemFullText(next).slice(0, 24) + '」');
         return next;
     }
-
-    // 执行跨小节：点击小节选项 → 等新 tablist → 点第一个非测验内容标签
-    // 兜底：点击的是分组标题（第一节/第二节）且平台不响应（tablist 未刷新）时，
-    // 自动改点该分组标题后面的第一个内容单元，保证不会卡在“节标题被跳过/无反应”。
     async function doSectionJump(item) {
         var oldTab = currentContentTab();
         clickMenuItem(item);
         updateStatus('📚 跨小节：进入下一节，自动播放第一个内容...');
         var tabs = await waitForTablistRefresh(oldTab);
         if (!tabs || tabs.length === 0) {
-            // 分组标题可能只是定位/无点击效果：改点该节第一个内容单元
             logDebug('nav', '⚠️ 点击「' + itemFullText(item).slice(0, 20) + '」后 tablist 未刷新，改点该节第一个内容单元');
             var dd = headerDropdowns();
             if (dd.section) {
@@ -1806,15 +1181,12 @@
         await waitForTabActive(first);
         return true;
     }
-
-    // 执行跨章节：点击章节选项 → 等新 tablist（必要时先点第一个小节）→ 点第一个非测验内容标签
     async function doChapterJump(item) {
         var oldTab = currentContentTab();
         clickMenuItem(item);
         updateStatus('📕 跨章节：进入下一章，自动播放第一个内容...');
         var tabs = await waitForTablistRefresh(oldTab);
         if (!tabs || tabs.length === 0) {
-            // 若平台未自动选中第一小节，展开小节下拉点第一项
             var dd2 = headerDropdowns();
             if (dd2.section) {
                 var items2 = await findDropdownItems(dd2.section);
@@ -1828,12 +1200,7 @@
         await waitForTabActive(first);
         return true;
     }
-
-    // 主跳转入口（严格三级优先级：同小节 → 跨小节 → 跨章节 → 结束）
-    // 关键修复：跨小节必须先确认「小节下拉里确实有下一项」才执行；
-    // 只有确认当前小节是最后一项，才会进入跨章节——从根上杜绝“节没学完就跳章”。
     async function goNext() {
-        // 当前激活的内容标签（页面加载慢时等它出现）
         var curTab = currentContentTab();
         if (!curTab) {
             logDebug('nav', '当前激活 tab 未找到，等待出现...');
@@ -1841,7 +1208,6 @@
             if (!curTab) { logDebug('nav', '❌ 5 秒后仍无激活 tab'); updateStatus('❌ 未找到当前内容标签，无法跳转'); return false; }
         }
         logDebug('nav', 'goNext 入口：当前激活 tab=「' + (curTab.getAttribute('aria-label') || cleanText(curTab.textContent).slice(0, 20)) + '」');
-        // 优先级 1：同小节内 —— 向后找下一个「非测验」内容标签
         var target = nextTabSkipQuiz(curTab);
         if (target) {
             realClick(target);
@@ -1851,11 +1217,9 @@
             return true;
         }
         logDebug('nav', '优先级1 无下一个同小节 tab（已到本节末尾）');
-        // 优先级 2：跨小节 —— 先确认小节下拉里确有下一项
         var secItem = await pickNextSectionItem();
         if (secItem) {
             if (await doSectionJump(secItem)) return true;
-            // 跨小节执行失败（点击了但内容未加载）：重试一次，绝不误跳章节
             updateStatus('⚠️ 跨小节执行失败，10 秒后自动重试...');
             logDebug('nav', '⚠️ 跨小节失败，10 秒后重试');
             await sleepWhile(10000, function () { return manualWaitFlag; });
@@ -1865,7 +1229,6 @@
             updateStatus('⚠️ 跨小节连续失败：请手动点击「小节」下拉切换，或检查顶部按钮结构');
             return false;
         }
-        // 优先级 3：跨章节 —— 已确认当前小节是本章最后一项
         var chapItem = await pickNextChapterItem();
         if (chapItem) {
             if (await doChapterJump(chapItem)) return true;
@@ -1873,13 +1236,10 @@
             updateStatus('⚠️ 跨章节执行失败：请手动点击「章节」下拉切换，或检查顶部按钮结构');
             return false;
         }
-        // 结束状态：所有查找都返回 null
         logDebug('nav', '🏁 三级跳转全部无目标 → 课程学习完成');
         alert('课程学习完成！');
         return false;
     }
-
-    // 富文本/节标题页等正文是否已经渲染出来（避免内容还没加载完就跳走）
     function hasVisibleContentBody() {
         var sels = [
             'main p', 'main h1', 'main h2', 'main h3', 'main h4',
@@ -1894,7 +1254,6 @@
             if (!isVisible(el)) continue;
             var t = cleanText((el.textContent || '')).slice(0, 80);
             if (!t || t.length < 2) continue;
-            // 排除脚本面板/导航等 UI 外壳文本与加载占位
             if (/MOOC 助手|自动学习|停止当前操作|页面 DOM 诊断|开始自动学习|加载中|loading|努力加载/.test(t)) continue;
             var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
             if (r && (r.width < 60 || r.height < 20)) continue;
@@ -1902,9 +1261,6 @@
         }
         return false;
     }
-
-    // 等待当前内容真正加载出来（SPA 异步渲染）。
-    // 视频/文档/讨论/富文本正文任一出现即算就绪；超时仍未出现 → 返回 false（按加载失败处理）。
     async function waitContentReady(timeout) {
         var t0 = Date.now();
         while (Date.now() - t0 < timeout) {
@@ -1918,18 +1274,12 @@
         logDebug('load', '⚠️ 内容加载超时（' + timeout + 'ms 内未见任何正文）');
         return false;
     }
-
-    // —— 自动学习主流程 ——
-
-    // 处理当前内容（视频/文档/测验/讨论），然后自动进入下一个内容
     async function learnOne() {
         var st = learnLoadState();
         if (!st) { setFloatVisible(false); return; }
-        // 上一轮跳转完成，清掉「用户点了【下一节】」的标志，避免误跳过本轮内容
         manualWaitFlag = false;
         await sleep(500);
         await dismissModal();
-        // 等当前内容真正加载出来（修复：文档/课件还没渲染完就跳转）
         updateStatus('⏳ 等待内容加载...');
         var ready = await waitContentReady(CONFIG.LEARN_CONTENT_READY_WAIT);
         if (taskState.cancelled) { learnClearState(); setFloatVisible(false); return; }
@@ -1943,12 +1293,10 @@
         var done = true;
 
         if (type === 'video') {
-            // 不再跳过连续视频：每个视频都正常播放。
             done = await learnVideoItem();
         } else if (type === 'doc') {
             done = await learnDocItem();
         } else {
-            // 自动学习只处理视频和文档，其余内容只导航。
             logDebug('learn', '视频与文档模式：跳过 ' + type);
             updateStatus('⏭ 视频与文档模式：跳过非视频内容，寻找下一个视频或文档...');
             done = true;
@@ -1959,24 +1307,17 @@
             setFloatVisible(false);
             return;
         }
-
-        // 记录最近处理的类型（仅用于续跑信息，不跳过连续视频）
         st.lastType = type;
         learnSaveState(st);
-
-        // 所有类型统一自动进入下一个内容
         var ok = await goNext();
         if (!ok) { learnClearState(); setFloatVisible(false); return; }
         await learnOne();
     }
-
-    // 用户点击「开始自动学习」：从当前内容开始处理，不跳转
     async function learnChapter() {
         if (!/\/learn\//.test(location.pathname) && !/\/spoc\/learn\//.test(location.pathname)) {
             updateStatus('⚠️ 自动学习只在新版学习页可用（请先进入课程学习页的某个内容）');
             return;
         }
-        // 关掉平台自带的“自动播放下一集”，避免和我们自己的跳转抢节奏
         var autoNext = document.querySelector('input.j-autoNext');
         if (autoNext && autoNext.checked) { realClick(autoNext); updateStatus('已关闭平台自带的“自动播放下一集”'); }
 
@@ -1986,8 +1327,6 @@
         updateStatus('🚀 自动学习开始：视频依次播放，文档自动翻页，其他内容跳过...');
         await learnOne();
     }
-
-    // 页面初始化时调用：若 localStorage 里还有未完成的自动学习且课程没变，接着跑
     function resumeLearn() {
         var st = learnLoadState();
         if (!st) return;
@@ -2002,7 +1341,6 @@
             if (err && err.__cancelled) updateStatus('⏹ 已停止当前操作');
             else { logDebug('err', '自动学习异常：' + (err && err.message)); console.error('[auto-learn]', err); updateStatus('❌ 自动学习异常：' + (err && err.message)); }
         }).then(function () {
-            // 只有学习真正结束/被停止时才收尾；等待【下一节】时状态仍在，不收尾
             if (!learnLoadState()) {
                 taskState.running = false;
                 taskState.cancelled = false;
@@ -2011,12 +1349,6 @@
             }
         });
     }
-
-    // —— 悬浮【下一节】按钮 ——
-    // 用途：① 富文本内容停留期间，点它提前结束等待并进入下一个内容；
-    //       ② 视频播放中/文档翻页中，点它立即跳过当前内容。
-    // 机制：点击只置 manualWaitFlag 标志，当前内容处理循环检测到标志会提前结束，
-    //       然后由 learnOne 统一走 goNext —— 避免按钮直接跳转造成双重跳转。
     var manualWaitFlag = false;
 
     function createFloatNextBtn() {
@@ -2086,7 +1418,7 @@
     return Object.assign({blankSeparator:"，", autoSubmit:true, videoCompletionWait:30, videoCompletionTimeout:"continue"}, GM_getValue("mooc_merged_quiz_config_v1", {}));
   }
   function saveConfig(cfg) { GM_setValue("mooc_merged_quiz_config_v1", cfg); }
-  function yield$() { return new Promise(resolve => setTimeout(resolve, 0)); }
+
   function log(msg) { updateStatus(msg); }
   function escapeHtml(s) { return escHtml(s); }
   const QUIZ_SELECTORS = {
@@ -2171,8 +1503,6 @@
     return questions;
   }
 
-  // ─── 测试题填答 ──────────────────────────────────────────────────────────────
-
   function triggerInput(el) {
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
@@ -2206,7 +1536,6 @@
       return false;
     }
     if (q.type === "1") {
-      // 只接受字母列表，避免将解释中的英文单词误认为选项。
       const raw = String(answer).trim().replace(/^(?:答案|正确答案)\s*[:：]\s*/, "");
       if (!/^[A-Za-z\s,，、;；/|\[\]()（）]+$/.test(raw)) {
         log("  [多选] 答案格式异常，未修改选项");
@@ -2322,12 +1651,10 @@
     });
   }
 
-
   function hasReplayButton() {
     const replay = document.querySelector("a.j-replay");
     return !!(replay && replay.offsetParent !== null && getComputedStyle(replay).display !== "none");
   }
-
 
   function handleQuizPreparePhase(isStale) {
     return new Promise(function (resolve) {
@@ -2361,7 +1688,6 @@
     });
   }
 
-
   function parseTestListPage() {
     var items = document.querySelectorAll(".u-quizHwListItem");
     var quizzes = [];
@@ -2371,7 +1697,6 @@
       var btn = item.querySelector(".j-quizBtn");
       var btnText = btn ? btn.textContent.trim() : "";
       if (btnText.indexOf("前往测验") === -1) return;
-      // 判断是否已完成：查看展开区域是否有"有效测验成绩"表格（.ansul）
       var ansul = item.querySelector(".ansul, .j-ansul");
       var hasScoreTable = !!ansul && ansul.querySelectorAll("li").length > 1; // 至少有表头+1条记录
       quizzes.push({
@@ -2381,7 +1706,6 @@
     });
     return quizzes;
   }
-
 
   const LLM_PROMPTS = {
     "0": "你是答题助手。下面是一道单选题，请根据最后提供的选项列表，只回复该列表中的一个大写选项字母（A/B/C/D...），不要返回题干内部的字母标签，不要任何解释。",
@@ -2560,10 +1884,10 @@
     });
   }
 
-  function callLlmRaw(cfg, question, type, options) {
+  function callLlmRaw(cfg, question, type, options, searchInfo) {
     if (!cfg.apiKey || !cfg.baseUrl || !cfg.model) return Promise.reject(new Error("LLM 配置不完整"));
     const systemPrompt = LLM_PROMPTS[type] || LLM_PROMPTS["0"];
-    let userContent = "题目：" + question;
+    let userContent = (searchInfo ? "参考资料：\n" + searchInfo + "\n\n" : "") + "题目：" + question;
     if (options && options.length) {
       userContent += "\n\n选项：\n" + options.map(function (o, i) {
         return String.fromCharCode(65 + i) + ". " + o;
@@ -2587,40 +1911,6 @@
             const data = JSON.parse(resp.responseText);
             const text = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) ||
               (data.content && data.content[0] && data.content[0].text) || "";
-            if (!text) { reject(new Error("LLM 返回为空")); return; }
-            resolve(text.trim());
-          } catch (e) { reject(new Error("LLM 响应解析失败：" + e.message)); }
-        },
-        onerror: function () { reject(new Error("LLM 网络错误")); },
-        ontimeout: function () { reject(new Error("LLM 超时")); },
-      });
-    });
-  }
-
-  function callLlmRawWithSearchInfo(cfg, question, type, options, searchInfo) {
-    if (!cfg.apiKey || !cfg.baseUrl || !cfg.model) return Promise.reject(new Error("LLM 配置不完整"));
-    var systemPrompt = LLM_PROMPTS[type] || LLM_PROMPTS["0"];
-    var userContent = "参考资料：\n" + searchInfo + "\n\n题目：" + question;
-    if (options && options.length) {
-      userContent += "\n\n选项：\n" + options.map(function (o, i) { return String.fromCharCode(65 + i) + ". " + o; }).join("\n");
-    }
-    var payload = JSON.stringify({
-      model: cfg.model, temperature: cfg.temperature,
-      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userContent }],
-    });
-    return new Promise(function (resolve, reject) {
-      log("[LLM] 使用联网搜索结果增强回答");
-      GM_xmlhttpRequest({
-        method: "POST", url: cfg.baseUrl,
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + cfg.apiKey },
-        data: payload, timeout: cfg.timeout,
-        onload: function (resp) {
-          if (resp.status < 200 || resp.status >= 300) {
-            reject(new Error("LLM HTTP " + resp.status)); return;
-          }
-          try {
-            var data = JSON.parse(resp.responseText);
-            var text = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
             if (!text) { reject(new Error("LLM 返回为空")); return; }
             resolve(text.trim());
           } catch (e) { reject(new Error("LLM 响应解析失败：" + e.message)); }
@@ -2659,62 +1949,13 @@
               fullInfo += "\n\n【网页原文 · " + page.title + "】\n" + page.content.slice(0, 1500);
             }
           });
-          return callLlmRawWithSearchInfo(cfg, question, type, options, fullInfo);
+          return callLlmRaw(cfg, question, type, options, fullInfo);
         });
       });
     }).catch(function () { return callLlmRaw(cfg, question, type, options); });
   }
 
-  GM_addStyle([
-    "#icourse-popup-viewer{",
-    "position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);",
-    "z-index:100000;width:720px;max-height:80vh;background:#1d1d1d;",
-    "color:#eee;border-radius:8px;font-family:monospace;font-size:12px;",
-    "box-shadow:0 8px 32px rgba(0,0,0,.6);display:flex;flex-direction:column;",
-    "}",
-    "#icourse-popup-viewer .pv-head{",
-    "padding:10px 12px;background:#2a2a2a;border-radius:8px 8px 0 0;",
-    "display:flex;justify-content:space-between;align-items:center;",
-    "}",
-    "#icourse-popup-viewer .pv-body{padding:10px 12px;overflow:auto;flex:1;}",
-    "#icourse-popup-viewer pre{",
-    "background:#000;padding:8px;border-radius:4px;",
-    "white-space:pre-wrap;word-break:break-all;margin:6px 0;",
-    "}",
-    "#icourse-popup-viewer .pv-actions button{",
-    "background:#444;color:#eee;border:none;padding:4px 10px;",
-    "border-radius:3px;cursor:pointer;margin-left:6px;",
-    "}",
-    "#icourse-popup-viewer.llm-panel{width:520px;}",
-    "#icourse-popup-viewer.llm-panel .pv-body{padding:16px 18px;font-family:'Segoe UI','PingFang SC',sans-serif;}",
-    ".llm-row{display:grid;grid-template-columns:90px 1fr;align-items:center;gap:10px;margin-bottom:12px;}",
-    ".llm-row label.k{color:#aaa;font-size:12px;}",
-    ".llm-row .v{display:flex;align-items:center;gap:6px;}",
-    ".llm-row .v input[type=text],.llm-row .v input[type=password],.llm-row .v input[type=number],.llm-row .v select{",
-    "flex:1;min-width:0;background:#2a2a2a;color:#eee;border:1px solid #444;",
-    "border-radius:4px;padding:5px 8px;font-size:12px;font-family:inherit;outline:none;",
-    "}",
-    ".llm-row .v input:focus,.llm-row .v select:focus{border-color:#4fc;}",
-    ".llm-row .v input::placeholder{color:#555;}",
-    ".llm-row.dual{grid-template-columns:90px 1fr 90px 1fr;}",
-    ".llm-row .eye{background:#333;color:#ccc;border:1px solid #444;border-radius:4px;padding:4px 8px;cursor:pointer;font-size:12px;}",
-    ".llm-row .eye:hover{background:#4a4a4a;color:#fff;}",
-    ".llm-switch{display:flex;align-items:center;justify-content:space-between;background:#262626;padding:10px 14px;border-radius:6px;margin-bottom:14px;border-left:3px solid #555;transition:border-color .2s;}",
-    ".llm-switch.on{border-left-color:#4f4;}",
-    ".llm-switch .lbl{font-size:13px;color:#eee;}",
-    ".llm-switch .sub{font-size:11px;color:#888;margin-top:2px;}",
-    ".llm-switch input{display:none;}",
-    ".llm-switch .track{width:40px;height:22px;background:#444;border-radius:11px;position:relative;cursor:pointer;transition:background .2s;}",
-    ".llm-switch .track::after{content:'';position:absolute;left:2px;top:2px;width:18px;height:18px;background:#ddd;border-radius:50%;transition:left .2s,background .2s;}",
-    ".llm-switch.on .track{background:#2ea043;}",
-    ".llm-switch.on .track::after{left:20px;background:#fff;}",
-    "#cf-test-out{margin-top:6px;font-size:12px;min-height:18px;}",
-    "#cf-test-out.ok{color:#4f4;}",
-    "#cf-test-out.err{color:#f66;}",
-    "#cf-test-out.pending{color:#aaa;}",
-    "#cf-toast{position:absolute;top:10px;left:50%;transform:translateX(-50%);background:#2ea043;color:#fff;padding:6px 14px;border-radius:4px;font-size:12px;opacity:0;transition:opacity .2s,top .2s;pointer-events:none;}",
-    "#cf-toast.show{opacity:1;top:46px;}",
-  ].join(""));
+  GM_addStyle(String.raw`#icourse-popup-viewer{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:100000;width:720px;max-height:80vh;background:#1d1d1d;color:#eee;border-radius:8px;font-family:monospace;font-size:12px;box-shadow:0 8px 32px rgba(0,0,0,.6);display:flex;flex-direction:column;}#icourse-popup-viewer .pv-head{padding:10px 12px;background:#2a2a2a;border-radius:8px 8px 0 0;display:flex;justify-content:space-between;align-items:center;}#icourse-popup-viewer .pv-body{padding:10px 12px;overflow:auto;flex:1;}#icourse-popup-viewer pre{background:#000;padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all;margin:6px 0;}#icourse-popup-viewer .pv-actions button{background:#444;color:#eee;border:none;padding:4px 10px;border-radius:3px;cursor:pointer;margin-left:6px;}#icourse-popup-viewer.llm-panel{width:520px;}#icourse-popup-viewer.llm-panel .pv-body{padding:16px 18px;font-family:'Segoe UI','PingFang SC',sans-serif;}.llm-row{display:grid;grid-template-columns:90px 1fr;align-items:center;gap:10px;margin-bottom:12px;}.llm-row label.k{color:#aaa;font-size:12px;}.llm-row .v{display:flex;align-items:center;gap:6px;}.llm-row .v input[type=text],.llm-row .v input[type=password],.llm-row .v input[type=number],.llm-row .v select{flex:1;min-width:0;background:#2a2a2a;color:#eee;border:1px solid #444;border-radius:4px;padding:5px 8px;font-size:12px;font-family:inherit;outline:none;}.llm-row .v input:focus,.llm-row .v select:focus{border-color:#4fc;}.llm-row .v input::placeholder{color:#555;}.llm-row.dual{grid-template-columns:90px 1fr 90px 1fr;}.llm-row .eye{background:#333;color:#ccc;border:1px solid #444;border-radius:4px;padding:4px 8px;cursor:pointer;font-size:12px;}.llm-row .eye:hover{background:#4a4a4a;color:#fff;}.llm-switch{display:flex;align-items:center;justify-content:space-between;background:#262626;padding:10px 14px;border-radius:6px;margin-bottom:14px;border-left:3px solid #555;transition:border-color .2s;}.llm-switch.on{border-left-color:#4f4;}.llm-switch .lbl{font-size:13px;color:#eee;}.llm-switch .sub{font-size:11px;color:#888;margin-top:2px;}.llm-switch input{display:none;}.llm-switch .track{width:40px;height:22px;background:#444;border-radius:11px;position:relative;cursor:pointer;transition:background .2s;}.llm-switch .track::after{content:'';position:absolute;left:2px;top:2px;width:18px;height:18px;background:#ddd;border-radius:50%;transition:left .2s,background .2s;}.llm-switch.on .track{background:#2ea043;}.llm-switch.on .track::after{left:20px;background:#fff;}#cf-test-out{margin-top:6px;font-size:12px;min-height:18px;}#cf-test-out.ok{color:#4f4;}#cf-test-out.err{color:#f66;}#cf-test-out.pending{color:#aaa;}#cf-toast{position:absolute;top:10px;left:50%;transform:translateX(-50%);background:#2ea043;color:#fff;padding:6px 14px;border-radius:4px;font-size:12px;opacity:0;transition:opacity .2s,top .2s;pointer-events:none;}#cf-toast.show{opacity:1;top:46px;}`);
 
   function showLlmConfigPanel() {
     const old = document.getElementById("icourse-popup-viewer");
@@ -2819,7 +2060,6 @@
       );
     };
   }
-
 
     function createFloatingPanel() {
         if (document.getElementById('mooc-auto-review-panel')) return;
@@ -2956,7 +2196,6 @@
         showTextOverlay('页面 DOM 诊断', JSON.stringify({路径:location.pathname,类型:detectContentType(),
             视频:!!findVideo(),文档:!!findDocViewer(),标签:tabs,题目数:parseQuiz().length}, null, 2));
     }
-    // 自选题模式：只进入用户当前选择的答题页，或旧版测验列表。
     function ensureQuizActive(url) {
         if (taskState.cancelled) throw makeCancelError();
         if (url && location.href !== url) throw new Error('页面已切换，停止当前测验');
@@ -3022,7 +2261,6 @@
     }
 
     async function runSelectedQuiz() {
-        // 不拉取课程任务队列；沿用原自选题模式中的旧版测验列表入口。
         if (location.hash.indexOf('/learn/testlist') === -1) { await solveSelectedQuiz(); return; }
         var pending = parseTestListPage().filter(function (q) { return !q.done; });
         if (!pending.length) { updateStatus('当前测验列表没有待完成的测验'); return; }
