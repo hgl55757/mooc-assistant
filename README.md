@@ -1,12 +1,26 @@
 # MOOC 学习测验助手
 
-当前版本：**1.0.8**。GitHub 私有仓库：https://github.com/hgl55757/mooc-assistant 。本地与远程通过 Git 管理版本。
+当前版本：**1.0.8**。项目仓库：[hgl55757/mooc-assistant](https://github.com/hgl55757/mooc-assistant)。本地与远程通过 Git 管理版本。
+
+## 参考项目与许可证
+
+本项目基于以下两个脚本融合修改，感谢原作者的工作：
+
+1. **中国大学MOOC-自动化**，作者 **weiy02**：
+   - [GitHub 项目：weiy02/ChinaMOOC-Auto](https://github.com/weiy02/ChinaMOOC-Auto)
+   - [脚本发布页](https://scriptcat.org/zh-CN/script-show-page/8833)
+   - 提供自动学习及课程导航等基础逻辑，原项目采用 MIT 许可证。
+2. **中国大学MOOC 自动完成助手**，发布作者 **haoduoyv**，命名空间 `icourse-auto`：
+   - [ScriptCat 原脚本发布页](https://scriptcat.org/en/script-show-page/6282)
+   - 提供自选题模式、模型配置及选择/填空处理等基础逻辑，原脚本及发布页标注 MIT。未确认其独立 GitHub 源码仓库，以上链接为发布页。
+
+本项目沿用 **MIT 许可证**，保留上游版权及许可声明；修改部分署名为 **Azureus**。完整许可见 [LICENSE](LICENSE)，第三方来源说明见 [THIRD_PARTY.md](THIRD_PARTY.md)。分发副本时请保留相关版权与许可声明。
 
 ## 文件
 
 - `mooc-assistant.user.js`：当前维护的油猴脚本。
 - `mooc-assistant.txt`：与脚本内容相同，方便全选复制。
-- `archive/merged/`：融合版 1.0.0～1.0.3 快照。
+- `archive/merged/`：融合版 1.0.0～1.0.4 快照。
 - `archive/legacy/`：融合前的两个脚本及能找到的修改版本。
 - `CHANGELOG.md`：版本变化和导入说明。
 - `tests/`：模拟回归检查；不连接真实课程、不提交学习记录。
