@@ -40,8 +40,6 @@
 
 - `mooc-assistant.user.js`：当前维护的油猴脚本。
 - `mooc-assistant.txt`：与脚本内容相同，方便全选复制。
-- `archive/merged/`：融合版 1.0.0～1.0.4 快照。
-- `archive/legacy/`：融合前的两个脚本及能找到的修改版本。
 - `CHANGELOG.md`：版本变化和导入说明。
 - `tests/`：模拟回归检查；不连接真实课程、不提交学习记录。
 
