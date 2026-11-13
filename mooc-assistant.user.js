@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         中国大学MOOC 学习测验助手
 // @namespace    mooc-learning-quiz-merged
-// @version      1.0.9
+// @version      1.0.10
 // @description  自动学习视频与文档，跳过讨论；视频弹题自动处理并继续学习；自选题模式只做选择、判断和填空。
 // @author       based on weiy02/ChinaMOOC-Auto and icourse-auto
 // @license      MIT
@@ -1069,152 +1069,62 @@ Third-party sources:
         return out;
     }
     function headerDropdowns() {
-        var btns = document.querySelectorAll('header button[aria-expanded], [class*="header"] button[aria-expanded], nav button[aria-expanded], button[aria-expanded]');
-        var chapter = null, section = null;
-        for (var i = 0; i < btns.length; i++) {
-            if (!isVisible(btns[i])) continue;
-            var label = btns[i].getAttribute('aria-label') || '';
-            if (!label) continue;
-            var cls = typeof btns[i].className === 'string' ? btns[i].className : (btns[i].getAttribute ? (btns[i].getAttribute('class') || '') : '');
-            if (/learn-header-action|learn-header-more|learn-agent|more-toggle|more-menu/.test(cls)) continue;
-            if (/更多课程操作|打开.*助教|更多|收起|关闭/.test(label)) continue;
-            if (looksLikeChapterHeading(label)) { if (!chapter) chapter = btns[i]; }
-            else { if (!section) section = btns[i]; }
-        }
-        logDebug('nav', '章节按钮=' + (chapter ? (chapter.getAttribute('aria-label') || '?') : '未找到')
-            + ' | 小节按钮=' + (section ? (section.getAttribute('aria-label') || '?') : '未找到'));
-        return { chapter: chapter, section: section };
-    }
-    function menuItemSels() {
-        return [
-            '[role="menuitem"]', '[role="option"]', '[class*="menuitem"]', '[class*="menu-item"]',
-            '[class*="dropdown"] a', '[class*="dropdown"] li', '[class*="dropdown"] button',
-            '[class*="popover"] a', '[class*="popover"] li', '[class*="popup"] a', '[class*="popup"] li',
-            '[class*="option"]', '[class*="choice"]', '[class*="select"] a', '[class*="select"] li',
-            'a', 'li', 'button',
-        ];
-    }
-    async function expandDropdown(btn) {
-        if (!btn) return null;
-        var before = collectCandidates(document, ['[role="menu"]', '[role="listbox"]', '[class*="dropdown"]', '[class*="popover"]', '[class*="popup"]', '[class*="select-list"]'], 40);
-        if (btn.getAttribute('aria-expanded') !== 'true') { realClick(btn); }
-        await sleep(400);
-        var fallbackPanel = null;
-        var node = btn;
-        for (var depth = 0; node && depth < 5; depth++) {
-            var parent = node.parentElement;
-            if (!parent) break;
-            var sels = ['[role="menu"]', '[role="listbox"]', '[class*="dropdown-menu"]', '[class*="dropdown"]', '[class*="popover"]', '[class*="popup"]'];
-            for (var s = 0; s < sels.length; s++) {
-                var p;
-                try { p = parent.querySelector(sels[s]); } catch (e) { continue; }
-                if (p && isVisible(p)) {
-                    if (before.indexOf(p) === -1) return p;
-                    if (!fallbackPanel) fallbackPanel = p;
-                }
-            }
-            node = parent;
-        }
-        var els = document.querySelectorAll('[role="menu"], [role="listbox"], [class*="dropdown-menu"], [class*="dropdown"], [class*="popover"], [class*="popup"]');
-        var anyPanel = null;
-        for (var i = 0; i < els.length; i++) {
-            if (isVisible(els[i])) {
-                if (before.indexOf(els[i]) === -1) return els[i];
-                if (!anyPanel) anyPanel = els[i];
-            }
-        }
-        return anyPanel || fallbackPanel || null;
-    }
-    function isClickableEl(el) {
-        var tag = el.tagName;
-        if (tag === 'A' || tag === 'BUTTON' || tag === 'LI') return true;
-        var role = el.getAttribute ? (el.getAttribute('role') || '') : '';
-        return role === 'option' || role === 'menuitem' || role === 'tab' || role === 'button';
-    }
-    function itemFullText(el) {
-        var node = el;
-        if (el.closest) {
-            var up = el.closest('a, li, button, [role="option"], [role="menuitem"], [role="tab"]');
-            if (up && up !== el) node = up;
-        }
-        return cleanText(node.textContent).slice(0, 40);
-    }
-    function dedupeClickable(raw) {
-        var out = [];
-        for (var i = 0; i < raw.length; i++) {
-            var el = raw[i];
-            var skip = false;
-            for (var j = 0; j < raw.length; j++) {
-                if (i !== j && raw[j] !== el && raw[j].contains(el) && isClickableEl(raw[j])) { skip = true; break; }
-            }
-            if (!skip) out.push(el);
-        }
-        return out;
-    }
-    function menuItemsOf(panel) {
-        var raw = collectCandidates(panel, menuItemSels(), 160);
-        var out = dedupeClickable(raw);
-        out.sort(function (a, b) {
-            if (a.compareDocumentPosition && b.compareDocumentPosition) {
-                return (a.compareDocumentPosition(b) & 4) ? -1 : 1;
-            }
-            return 0;
+        var root = document.getElementById('learn-main-content');
+        if (!root) return { chapter: null, section: null };
+        var buttons = Array.from(root.querySelectorAll('button[aria-expanded][aria-label][title]')).filter(function (button) {
+            return isVisible(button) && !button.closest('.mooc-video-player, .video-ai-layout, #mooc-auto-review-panel') &&
+                button.getAttribute('title') === button.getAttribute('aria-label');
         });
-        return out;
-    }
-    async function findDropdownItems(btn) {
-        var before = collectCandidates(document, menuItemSels(), 160);
-        var panel = await expandDropdown(btn);
-        var items = []; // 必须初始化：panel 为 null 时保持空数组，避免后续 items.length 崩溃
-        if (panel) {
-            items = menuItemsOf(panel);
-            if (items.length === 0 && panel.scrollTop !== undefined) {
-                try { panel.scrollTop = panel.scrollHeight; } catch (e) {}
-                await sleep(400);
-                items = menuItemsOf(panel);
+        // 新版页面：同一行两个相邻的下拉框，左边章、右边节；不按标题语言和长度猜测。
+        for (var i = 0; i < buttons.length - 1; i++) {
+            var row = buttons[i].parentElement && buttons[i].parentElement.parentElement;
+            if (row && buttons[i + 1].parentElement && buttons[i + 1].parentElement.parentElement === row) {
+                return { chapter: buttons[i], section: buttons[i + 1] };
             }
-            if (items.length > 0) return items;
         }
-        var after = collectCandidates(document, menuItemSels(), 160);
-        var news = [];
-        for (var i = 0; i < after.length; i++) {
-            if (before.indexOf(after[i]) === -1) news.push(after[i]);
+        return { chapter: null, section: null };
+    }
+    function navLabel(element) {
+        return element ? cleanText(element.getAttribute('title') || element.getAttribute('aria-label') || element.textContent || '') : '';
+    }
+    function navClick(element) {
+        if (taskState.cancelled) throw makeCancelError();
+        if (!element || element.disabled) throw new Error('目录目标不可点击，已停止跳转以免漏节');
+        if (element.scrollIntoView) element.scrollIntoView({ block: 'nearest' });
+        if (typeof element.click === 'function') element.click();
+        else realClick(element);
+    }
+    function closeHeaderDropdown(kind) {
+        var button = headerDropdowns()[kind];
+        if (button && button.getAttribute('aria-expanded') === 'true') navClick(button);
+    }
+    async function findDropdownItems(button) {
+        var dd = headerDropdowns();
+        var kind = button === dd.chapter ? 'chapter' : button === dd.section ? 'section' : null;
+        if (!kind) throw new Error('未能识别左右章节下拉框，已停止跳转以免漏节');
+        closeHeaderDropdown(kind === 'chapter' ? 'section' : 'chapter');
+        button = headerDropdowns()[kind];
+        if (button.getAttribute('aria-expanded') !== 'true') navClick(button);
+        var started = Date.now();
+        while (Date.now() - started < CONFIG.LEARN_NAV_WAIT) {
+            if (taskState.cancelled) throw makeCancelError();
+            var current = headerDropdowns()[kind];
+            // 实测新版菜单没有 menu/listbox 角色；只读取对应按钮自己的容器，不能全页混搜。
+            if (current && current.getAttribute('aria-expanded') === 'true' && current.parentElement) {
+                var items = Array.from(current.parentElement.querySelectorAll('button[title]:not([aria-expanded]), [role="menuitem"], [role="option"]'))
+                    .filter(function (item) { return item !== current && isVisible(item) && !item.disabled && navLabel(item); });
+                if (items.length) return items;
+            }
+            await sleep(200);
         }
-        var out = dedupeClickable(news);
-        logDebug('menu', '下拉项(面板模式)=' + items.length + ' → diff兜底=' + out.length
-            + ' | 面板=' + (panel ? (panel.className ? String(panel.className).slice(0, 40) : panel.tagName) : 'null'));
-        return out;
+        throw new Error((kind === 'section' ? '右侧小节' : '左侧章节') + '目录未读取成功，已停止跳转以免漏节');
     }
-    function clickMenuItem(el) {
-        var target = el;
-        if (el.closest) {
-            var up = el.closest('a, li, button, [role="option"], [role="menuitem"], [role="tab"]');
-            if (up && up !== el) target = up;
-        }
-        try { if (target.scrollIntoView) target.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
-        realClick(target);
-    }
-    function isGroupTitle(t) {
-        return /^第[一二三四五六七八九十百\d]+\s*节/.test(t) && !/^\s*\d+(\.\d+)+/.test(t);
-    }
-    function normMatch(s) {
-        return String(s === null || s === undefined ? '' : s).replace(/\s+/g, '');
-    }
+    function normMatch(value) { return cleanText(value).replace(/\s+/g, ''); }
     function nextOfMenuItems(items, currentLabel) {
-        if (!items || items.length === 0) return null;
         var target = normMatch(currentLabel);
-        var idx = -1;
-        for (var i = 0; i < items.length; i++) {
-            var full = itemFullText(items[i]);
-            var t = normMatch(full);
-            if (!t) continue;
-            if (target && (t === target || t.indexOf(target) !== -1 || target.indexOf(t) !== -1)) { idx = i; break; }
-        }
-        if (idx === -1) return null; // 没找到当前项，无法确定“下一个”
-        var ret = (idx + 1 < items.length) ? items[idx + 1] : null;
-        logDebug('menu', '匹配「' + (String(currentLabel || '').slice(0, 20)) + '」→ idx=' + idx
-            + (ret ? '，下一个=「' + itemFullText(ret).slice(0, 24) + '」' : '，无下一个（当前是最后一项）'));
-        return ret;
+        var index = items.findIndex(function (item) { return normMatch(navLabel(item)) === target; });
+        if (index < 0) throw new Error('目录中未匹配到当前项「' + currentLabel + '」，不能判定已到末尾，已停止跳转');
+        return index + 1 < items.length ? items[index + 1] : null;
     }
     function tabIsQuiz(tab) {
         var label = (tab.getAttribute && (tab.getAttribute('aria-label') || '')) || '';
@@ -1240,144 +1150,110 @@ Third-party sources:
         }
         return null;
     }
-    async function waitForTablistRefresh(oldTab) {
-        var t0 = Date.now();
-        while (Date.now() - t0 < 10000) {
-            if (taskState.cancelled) return null;
-            var tabs = contentTabs();
-            if (tabs.length > 0) {
-                var changed = false;
-                for (var i = 0; i < tabs.length; i++) {
-                    if (tabs[i] !== oldTab) { changed = true; break; }
-                }
-                if (changed) {
-                    logDebug('nav', 'tablist 已刷新：' + tabs.length + ' 个内容标签，等待耗时 ' + (Date.now() - t0) + 'ms');
-                    return tabs;
-                }
+    function navigationSnapshot() {
+        var dd = headerDropdowns(), video = findVideo();
+        return { context: videoUnitContext(), chapter: navLabel(dd.chapter), section: navLabel(dd.section),
+            player: { video: video, source: video ? (video.currentSrc || video.src || '') : '' } };
+    }
+    async function waitForHeaderSelection(kind, expected) {
+        var started = Date.now();
+        while (Date.now() - started < CONFIG.LEARN_CONTENT_READY_WAIT) {
+            if (taskState.cancelled) throw makeCancelError();
+            var dd = headerDropdowns();
+            if (normMatch(navLabel(dd[kind])) === normMatch(expected)) {
+                var chapterNumber = navLabel(dd.chapter).match(/^(\d+)(?:\s|$)/);
+                var sectionNumber = navLabel(dd.section).match(/^(\d+)[.．]\d+/);
+                if (kind !== 'chapter' || !chapterNumber || !sectionNumber || chapterNumber[1] === sectionNumber[1]) return true;
             }
             await sleep(200);
         }
-        logDebug('nav', '⚠️ tablist 刷新超时（10 秒内旧元素未被替换）');
-        return null;
+        return false;
+    }
+    async function enterSectionContent(before, chapterLabel, sectionLabel) {
+        var started = Date.now(), stableSince = null;
+        while (Date.now() - started < CONFIG.LEARN_CONTENT_READY_WAIT) {
+            if (taskState.cancelled) throw makeCancelError();
+            var dd = headerDropdowns(), tabs = contentTabs();
+            var selected = normMatch(navLabel(dd.chapter)) === normMatch(chapterLabel) &&
+                normMatch(navLabel(dd.section)) === normMatch(sectionLabel) &&
+                contentUnitChanged(before.context, videoUnitContext()) && tabs.length;
+            if (selected) {
+                if (stableSince === null) stableSince = Date.now();
+                if (Date.now() - stableSince >= 400) {
+                    var first = firstNonQuizTab(tabs) || tabs[0];
+                    if (!await activateContentTab(first)) return false;
+                    if (!await waitForSwitchedPlayer(before.player)) return false;
+                    recordRunEvent('navigation', '已确认进入「' + chapterLabel + '」→「' + sectionLabel + '」的第一个内容');
+                    return true;
+                }
+            } else stableSince = null;
+            await sleep(200);
+        }
+        updateStatus('目录切换后未确认目标小节和课件就绪，已暂停，避免漏节');
+        return false;
     }
     async function pickNextSectionItem() {
         var dd = headerDropdowns();
-        if (!dd.section) { logDebug('nav', '⚠️ 未找到「小节」下拉按钮'); return null; }
-        var name = dd.section.getAttribute('aria-label') || '';
-        logDebug('nav', '跨小节决策：小节名=「' + name.slice(0, 24) + '」');
-        var items = await findDropdownItems(dd.section);
-        var next = nextOfMenuItems(items, name);
+        if (!dd.chapter || !dd.section) throw new Error('未识别到左章右节导航，已停止跳转');
+        var current = navLabel(dd.section), items = await findDropdownItems(dd.section);
+        var next = nextOfMenuItems(items, current);
         if (!next) {
-            logDebug('nav', '小节下拉无下一项 → 判定当前小节是本章最后一项，进入跨章节');
-            if (dd.section.getAttribute('aria-expanded') === 'true') realClick(dd.section);
-            return null;
-        }
-        logDebug('nav', '跨小节目标=「' + itemFullText(next).slice(0, 24) + '」');
+            closeHeaderDropdown('section');
+            recordRunEvent('section-end', '已核对右侧目录，「' + current + '」是本章最后一节，准备切换左侧章节');
+        } else logDebug('nav', '优先进入右侧下一小节：「' + navLabel(next) + '」');
         return next;
     }
     async function pickNextChapterItem() {
         var dd = headerDropdowns();
-        if (!dd.chapter) { logDebug('nav', '⚠️ 未找到「章节」下拉按钮'); return null; }
-        var name = dd.chapter.getAttribute('aria-label') || '';
-        logDebug('nav', '跨章节决策：章节名=「' + name.slice(0, 24) + '」');
-        var items = await findDropdownItems(dd.chapter);
-        var next = nextOfMenuItems(items, name);
-        if (!next) {
-            logDebug('nav', '章节下拉无下一项 → 判定全部章节学完');
-            if (dd.chapter.getAttribute('aria-expanded') === 'true') realClick(dd.chapter);
-            return null;
-        }
-        logDebug('nav', '跨章节目标=「' + itemFullText(next).slice(0, 24) + '」');
+        if (!dd.chapter) throw new Error('未识别到左侧章节导航，已停止跳转');
+        var current = navLabel(dd.chapter), items = await findDropdownItems(dd.chapter);
+        var next = nextOfMenuItems(items, current);
+        if (!next) closeHeaderDropdown('chapter');
         return next;
     }
     async function doSectionJump(item) {
-        var oldTab = currentContentTab();
-        clickMenuItem(item);
-        updateStatus('📚 跨小节：进入下一节，自动播放第一个内容...');
-        var tabs = await waitForTablistRefresh(oldTab);
-        if (!tabs || tabs.length === 0) {
-            logDebug('nav', '⚠️ 点击「' + itemFullText(item).slice(0, 20) + '」后 tablist 未刷新，改点该节第一个内容单元');
-            var dd = headerDropdowns();
-            if (dd.section) {
-                var items = await findDropdownItems(dd.section);
-                var idx = items.indexOf(item);
-                var nextContent = null;
-                for (var j = idx + 1; j < items.length; j++) {
-                    var ft = itemFullText(items[j]);
-                    if (ft && !isGroupTitle(ft)) { nextContent = items[j]; break; }
-                }
-                if (nextContent) {
-                    clickMenuItem(nextContent);
-                    tabs = await waitForTablistRefresh(oldTab);
-                }
-            }
-        }
-        if (!tabs || tabs.length === 0) return false;
-        var first = firstNonQuizTab(tabs) || tabs[0];
-        realClick(first);
-        await waitForTabActive(first);
-        return true;
+        var before = navigationSnapshot(), target = navLabel(item);
+        recordRunEvent('section-next', '右侧小节：「' + before.section + '」→「' + target + '」');
+        navClick(item);
+        return await enterSectionContent(before, before.chapter, target);
     }
     async function doChapterJump(item) {
-        var oldTab = currentContentTab();
-        clickMenuItem(item);
-        updateStatus('📕 跨章节：进入下一章，自动播放第一个内容...');
-        var tabs = await waitForTablistRefresh(oldTab);
-        if (!tabs || tabs.length === 0) {
-            var dd2 = headerDropdowns();
-            if (dd2.section) {
-                var items2 = await findDropdownItems(dd2.section);
-                if (items2.length > 0) { clickMenuItem(items2[0]); await sleep(600); }
-            }
-            tabs = await waitForTablistRefresh(oldTab);
-        }
-        if (!tabs || tabs.length === 0) return false;
-        var first = firstNonQuizTab(tabs) || tabs[0];
-        realClick(first);
-        await waitForTabActive(first);
-        return true;
+        var before = navigationSnapshot(), target = navLabel(item);
+        recordRunEvent('chapter-next', '左侧章节：「' + before.chapter + '」→「' + target + '」，随后选择右侧第一节');
+        navClick(item);
+        if (!await waitForHeaderSelection('chapter', target)) return false;
+        var dd = headerDropdowns(), sections = await findDropdownItems(dd.section);
+        var first = sections[0], firstLabel = navLabel(first);
+        // 切章时平台可能保留原小节序号（如 6.3 -> 7.3），必须显式选择新章的第一节。
+        if (normMatch(navLabel(dd.section)) !== normMatch(firstLabel)) navClick(first);
+        else closeHeaderDropdown('section');
+        updateStatus('📕 进入新章第一节：' + firstLabel);
+        return await enterSectionContent(before, target, firstLabel);
     }
     async function goNext() {
         var curTab = currentContentTab();
-        if (!curTab) {
-            logDebug('nav', '当前激活 tab 未找到，等待出现...');
-            curTab = await waitForElement('[role="tab"][aria-selected="true"]', 5000);
-            if (!curTab) { logDebug('nav', '❌ 5 秒后仍无激活 tab'); updateStatus('❌ 未找到当前内容标签，无法跳转'); return false; }
-        }
-        logDebug('nav', 'goNext 入口：当前激活 tab=「' + (curTab.getAttribute('aria-label') || cleanText(curTab.textContent).slice(0, 20)) + '」');
+        if (!curTab) curTab = await waitForElement('[role="tab"][aria-selected="true"]', 5000);
+        if (!curTab) { updateStatus('未找到当前内容标签，无法跳转'); return false; }
         var target = nextTabSkipQuiz(curTab);
         if (target) {
-            updateStatus('➡️ 同小节：进入下一个内容');
-            logDebug('nav', '优先级1 同小节：点击「' + (target.getAttribute('aria-label') || cleanText(target.textContent).slice(0, 20)) + '」');
-            if (!await activateContentTab(target)) {
-                updateStatus('同小节标签切换超时，自动学习暂停，请检查页面');
-                return false;
-            }
+            if (!await activateContentTab(target)) { updateStatus('同小节标签切换超时，自动学习暂停，请检查页面'); return false; }
             return true;
         }
-        logDebug('nav', '优先级1 无下一个同小节 tab（已到本节末尾）');
-        var secItem = await pickNextSectionItem();
-        if (secItem) {
-            if (await doSectionJump(secItem)) return true;
-            updateStatus('⚠️ 跨小节执行失败，10 秒后自动重试...');
-            logDebug('nav', '⚠️ 跨小节失败，10 秒后重试');
-            await sleepWhile(10000, function () { return manualWaitFlag; });
-            secItem = await pickNextSectionItem();
-            if (secItem && await doSectionJump(secItem)) return true;
-            logDebug('nav', '⚠️ 跨小节连续失败');
-            updateStatus('⚠️ 跨小节连续失败：请手动点击「小节」下拉切换，或检查顶部按钮结构');
+        // 先右侧下一小节；只有已匹配当前项且确认位于目录末尾，才允许操作左侧章节。
+        var section = await pickNextSectionItem();
+        if (section) {
+            if (await doSectionJump(section)) return true;
+            updateStatus('右侧小节切换未确认，已暂停；不会继续跳章');
             return false;
         }
-        var chapItem = await pickNextChapterItem();
-        if (chapItem) {
-            if (await doChapterJump(chapItem)) return true;
-            logDebug('nav', '⚠️ 跨章节执行失败');
-            updateStatus('⚠️ 跨章节执行失败：请手动点击「章节」下拉切换，或检查顶部按钮结构');
+        var chapter = await pickNextChapterItem();
+        if (chapter) {
+            if (await doChapterJump(chapter)) return true;
+            updateStatus('新章第一节切换未确认，已暂停，请检查目录');
             return false;
         }
-        logDebug('nav', '🏁 三级跳转全部无目标 → 课程学习完成');
-        updateStatus('未找到后续内容；可能已到课程末尾，如未学完请检查章节目录');
-        recordRunEvent('navigation', '目录检查未找到后续内容，结束本轮自动学习');
+        updateStatus('已到章节目录末尾，没有后续内容');
+        recordRunEvent('navigation', '已核对左右目录末尾，结束本轮自动学习');
         return false;
     }
     function hasVisibleContentBody() {
@@ -1438,7 +1314,7 @@ Third-party sources:
         var itemContext = videoUnitContext();
         var itemVideo = findVideo();
         var previousPlayer = { video: itemVideo, source: itemVideo ? (itemVideo.currentSrc || itemVideo.src || '') : '' };
-        recordRunEvent('item', 'v1.0.9 处理内容：类型=' + type + '，标签「' + contentTabKey(currentContentTab()) + '」');
+        recordRunEvent('item', 'v1.0.10 处理内容：类型=' + type + '，标签「' + contentTabKey(currentContentTab()) + '」');
         var done = true;
 
         if (type === 'video') {
@@ -2315,7 +2191,7 @@ Third-party sources:
         taskState.stopReason = ''; taskState.outcomeRecorded = false;
         setButtonsRunning(true);
         var name = fn === learnChapter || fn === learnOne ? '自动学习' : '测验';
-        recordRunEvent(resumed ? 'resume' : 'start', (resumed ? '页面刷新后恢复' : '开始') + name + '（v1.0.9）');
+        recordRunEvent(resumed ? 'resume' : 'start', (resumed ? '页面刷新后恢复' : '开始') + name + '（v1.0.10）');
         if (resumed) updateStatus('▶ 正在恢复自动学习，从播放器当前进度继续...');
         try {
             await fn();
